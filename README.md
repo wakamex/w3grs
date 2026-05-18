@@ -1,8 +1,8 @@
 # w3grs
 
-`w3grs` is a Rust port of [`w3gjs`](./upstream/w3gjs), intended to be a clean library for parsing Warcraft III replay files in other Rust projects.
+`w3grs` is a Rust port of [`w3gjs`](https://github.com/PBug90/w3gjs), intended to be a clean library for parsing Warcraft III replay files in other Rust projects.
 
-The upstream TypeScript source is kept as a Git submodule in `upstream/w3gjs` as the parity reference while this crate is ported module by module.
+The upstream TypeScript source is tracked as a Git submodule in `upstream/w3gjs` for parity tests, benchmarks, and future maintenance. The published crate contains the Rust library and a small fixture subset, not the full upstream replay corpus.
 
 ## Installation
 
@@ -14,7 +14,7 @@ cargo add w3grs
 
 ## Development Checkout
 
-Clone with submodules when you want to run the `w3gjs` parity and speed comparison scripts:
+Clone with submodules when you want to run the repository's `w3gjs` parity and speed comparison scripts:
 
 ```sh
 git clone --recurse-submodules git@github.com:wakamex/w3grs.git
@@ -77,7 +77,7 @@ fn main() -> w3grs::Result<()> {
 
 ## Benchmark
 
-Compare local `w3gjs` and `w3grs` parsing speed on the same replay:
+From a development checkout with the submodule initialized, compare local `w3gjs` and `w3grs` parsing speed on the same replay:
 
 ```sh
 node scripts/benchmark.mjs --prepare upstream/w3gjs/test/replays/132/reforged1.w3g
@@ -95,7 +95,7 @@ The benchmark reads the replay once per parser process, warms both parsers, then
 Example smoke result on this repo's `reforged1.w3g` fixture with 2 timed iterations and 1 warmup:
 
 ```text
-Replay: /code/w3grs/upstream/w3gjs/test/replays/132/reforged1.w3g
+Replay: upstream/w3gjs/test/replays/132/reforged1.w3g
 Iterations: 2 timed, 1 warmup
 
 Parser   total ms   mean ms   min ms    max ms    players
@@ -113,7 +113,7 @@ node scripts/benchmark.mjs upstream/w3gjs/test/replays/132/reforged1.w3g --itera
 
 ## Upstream Parity And Speed Sweep
 
-Check every replay fixture in `upstream/w3gjs/test/replays` for output parity while timing both parsers:
+From a development checkout, check every replay fixture in `upstream/w3gjs/test/replays` for output parity while timing both parsers:
 
 ```sh
 node scripts/compare-all.mjs --prepare --iterations 3 --warmup 1
@@ -136,11 +136,11 @@ node scripts/compare-all.mjs --json
 node scripts/compare-all.mjs --fail-on-mismatch --write-mismatches tmp/parity
 ```
 
-Current smoke result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
+Recent local smoke result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
 
 ```text
 Replays: 50
 Exact byte parity: 0/50 (mismatches include expected parseTime differences)
 Normalized parity without parseTime: 50/50
-Speedup mean/min/max: 19.70x / 3.53x / 73.72x
+Speedup mean/min/max: 17.99x / 2.81x / 78.62x
 ```
