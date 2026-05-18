@@ -1,0 +1,29 @@
+[package]
+name = "w3grs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A Rust port of w3gjs for parsing Warcraft III replay files."
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/w3grs"
+repository = "https://github.com/wakamex/w3grs"
+keywords = ["warcraft", "replay", "parser", "w3g", "w3gjs"]
+categories = ["parser-implementations", "game-development"]
+include = [
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/src/*.rs",
+    "/src/bin/*.rs",
+    "/fixtures/replays/**/*",
+    "/tests/*.rs",
+]
+
+[dependencies]
+flate2 = "1"
+prost = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
