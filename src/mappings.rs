@@ -1,32 +1,52 @@
 //! Warcraft III object mappings ported from `w3gjs/src/mappings.ts`.
 
+use std::sync::LazyLock;
+
 pub fn item_name(id: &str) -> Option<&'static str> {
-    lookup(ITEMS, id)
+    lookup(&ITEMS_BY_ID, id)
 }
 
 pub fn unit_name(id: &str) -> Option<&'static str> {
-    lookup(UNITS, id)
+    lookup(&UNITS_BY_ID, id)
 }
 
 pub fn building_name(id: &str) -> Option<&'static str> {
-    lookup(BUILDINGS, id)
+    lookup(&BUILDINGS_BY_ID, id)
 }
 
 pub fn upgrade_name(id: &str) -> Option<&'static str> {
-    lookup(UPGRADES, id)
+    lookup(&UPGRADES_BY_ID, id)
 }
 
 pub fn hero_ability_name(id: &str) -> Option<&'static str> {
-    lookup(HERO_ABILITIES, id)
+    lookup(&HERO_ABILITIES_BY_ID, id)
 }
 
 pub fn ability_to_hero(id: &str) -> Option<&'static str> {
-    lookup(ABILITY_TO_HERO, id)
+    lookup(&ABILITY_TO_HERO_BY_ID, id)
 }
 
-fn lookup(map: &[(&'static str, &'static str)], id: &str) -> Option<&'static str> {
-    map.iter()
-        .find_map(|(key, value)| (*key == id).then_some(*value))
+type ObjectTable = Vec<(&'static str, &'static str)>;
+
+static ITEMS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(ITEMS));
+static UNITS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(UNITS));
+static BUILDINGS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(BUILDINGS));
+static UPGRADES_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(UPGRADES));
+static HERO_ABILITIES_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(HERO_ABILITIES));
+static ABILITY_TO_HERO_BY_ID: LazyLock<ObjectTable> =
+    LazyLock::new(|| build_lookup(ABILITY_TO_HERO));
+
+fn lookup(table: &LazyLock<ObjectTable>, id: &str) -> Option<&'static str> {
+    table
+        .binary_search_by(|(key, _)| key.cmp(&id))
+        .ok()
+        .map(|index| table[index].1)
+}
+
+fn build_lookup(entries: &'static [(&'static str, &'static str)]) -> ObjectTable {
+    let mut table = entries.to_vec();
+    table.sort_by_key(|(key, _)| *key);
+    table
 }
 
 pub const ITEMS: &[(&str, &str)] = &[
@@ -778,3 +798,27 @@ pub const ABILITY_TO_HERO: &[(&str, &str)] = &[
     ("ANcr", "Nalc"),
     ("ANtm", "Nalc"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_maps_match_mapping_tables() {
+        assert_table_lookup(ITEMS, item_name);
+        assert_table_lookup(UNITS, unit_name);
+        assert_table_lookup(BUILDINGS, building_name);
+        assert_table_lookup(UPGRADES, upgrade_name);
+        assert_table_lookup(HERO_ABILITIES, hero_ability_name);
+        assert_table_lookup(ABILITY_TO_HERO, ability_to_hero);
+    }
+
+    fn assert_table_lookup(
+        entries: &[(&'static str, &'static str)],
+        lookup: fn(&str) -> Option<&'static str>,
+    ) {
+        for (key, value) in entries {
+            assert_eq!(lookup(key), Some(*value), "lookup mismatch for {key}");
+        }
+    }
+}
