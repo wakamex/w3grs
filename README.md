@@ -128,6 +128,12 @@ The sweep reports:
 
 `parseTime` is expected to break exact parity because it measures each parser's runtime. Normalized parity is the useful output-equivalence signal.
 
+## Intentional Divergences
+
+`w3grs` is stricter than `w3gjs` about required replay metadata structure. For example, the metadata parser returns an error when the lobby setup marker is not the expected `0x19` byte, while `w3gjs` logs the unknown chunk and keeps parsing. This is intentional: the marker is an internal W3G consistency check, not a user-facing replay metric, and treating an invalid marker as an error helps catch corrupt or out-of-sync replay metadata early. Nearby length fields such as `remainingBytes` are likewise internal format fields.
+
+The low-level Rust API also returns parsed `game_data_blocks` directly instead of exposing them only through Node-style events. This keeps the same underlying replay data but presents it in a Rust-friendly result structure.
+
 Useful options:
 
 ```sh
