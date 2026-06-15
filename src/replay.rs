@@ -18,8 +18,9 @@ use crate::{
     game_data::{
         CommandBlock, GameDataBlock, LeaveGameBlock, PlayerChatMessageBlock, TimeslotBlock,
     },
-    metadata::{PlayerRecord, ReplayMetadata, SlotRecord},
+    metadata::{PlayerRecord, ReplayMetadata},
     player::{Player, formatted_order_id},
+    raw::SubHeader,
     replay_parser::{ReplayParser, ReplayParserOutput},
     sort::sort_players,
     types::ItemId,
@@ -28,17 +29,12 @@ use crate::{
 #[derive(Debug)]
 pub struct W3GReplay {
     parser: ReplayParser,
-    info: Option<ReplayParserOutput>,
+    context: Option<ReplayContext>,
     players: HashMap<u8, Player>,
     observers: Vec<String>,
     chatlog: Vec<ChatMessage>,
     id: String,
     leave_events: Vec<LeaveGameBlock>,
-    w3mmd: Vec<Action>,
-    slots: Vec<SlotRecord>,
-    teams: HashMap<u8, Vec<u8>>,
-    meta: Option<ReplayMetadata>,
-    player_list: Vec<PlayerRecord>,
     total_time_tracker: u32,
     time_segment_tracker: u32,
     player_action_track_interval: u32,
@@ -48,6 +44,12 @@ pub struct W3GReplay {
     known_player_ids: HashSet<u8>,
     winning_team_id: i16,
     is_parsing: bool,
+}
+
+#[derive(Debug)]
+struct ReplayContext {
+    subheader: SubHeader,
+    metadata: ReplayMetadata,
 }
 
 impl W3GReplay {
@@ -60,7 +62,8 @@ impl W3GReplay {
     }
 
     pub fn parse_file(&mut self, path: impl AsRef<Path>) -> Result<ParserOutput> {
-        Ok(self.parse_file_detailed(path)?.summary)
+        let bytes = std::fs::read(path)?;
+        self.parse_bytes(&bytes)
     }
 
     pub fn parse_file_detailed(&mut self, path: impl AsRef<Path>) -> Result<ParsedReplay> {
@@ -69,7 +72,32 @@ impl W3GReplay {
     }
 
     pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<ParserOutput> {
-        Ok(self.parse_bytes_detailed(bytes)?.summary)
+        if self.is_parsing {
+            return Err(Error::ConcurrentParsingNotSupported);
+        }
+
+        self.is_parsing = true;
+        let parse_start = Instant::now();
+        let result = (|| {
+            self.reset_state();
+            let parser = ReplayParser::new();
+            let prefix = parser.parse_prefix(bytes)?;
+            self.handle_basic_replay_information(&prefix.metadata);
+
+            parser.parse_game_data_with(&prefix.metadata, |block| {
+                self.process_game_data_block(&block);
+                Ok(())
+            })?;
+
+            self.set_context(prefix.subheader, prefix.metadata);
+            self.generate_id();
+            self.determine_matchup();
+            self.determine_winning_team();
+            self.cleanup();
+            self.finalize(parse_start)
+        })();
+        self.is_parsing = false;
+        result
     }
 
     pub fn parse_bytes_detailed(&mut self, bytes: &[u8]) -> Result<ParsedReplay> {
@@ -82,40 +110,34 @@ impl W3GReplay {
         let result = (|| {
             self.reset_state();
             let info = self.parser.parse(bytes)?;
-            self.handle_basic_replay_information(&info);
+            self.handle_basic_replay_information(&info.metadata);
 
             for block in &info.game_data_blocks {
                 self.process_game_data_block(block);
             }
 
-            self.info = Some(info);
+            self.set_context_from_metadata(info.subheader.clone(), &info.metadata);
             self.generate_id();
             self.determine_matchup();
             self.determine_winning_team();
             self.cleanup();
             let summary = self.finalize(parse_start)?;
-            let low_level = self
-                .info
-                .take()
-                .ok_or_else(|| Error::Message("missing replay parser output".to_string()))?;
-            Ok(ParsedReplay { low_level, summary })
+            Ok(ParsedReplay {
+                low_level: info,
+                summary,
+            })
         })();
         self.is_parsing = false;
         result
     }
 
     fn reset_state(&mut self) {
-        self.info = None;
+        self.context = None;
         self.players.clear();
         self.observers.clear();
         self.chatlog.clear();
         self.id.clear();
         self.leave_events.clear();
-        self.w3mmd.clear();
-        self.slots.clear();
-        self.teams.clear();
-        self.meta = None;
-        self.player_list.clear();
         self.total_time_tracker = 0;
         self.time_segment_tracker = 0;
         self.player_action_track_interval = 60000;
@@ -126,29 +148,36 @@ impl W3GReplay {
         self.winning_team_id = -1;
     }
 
-    fn handle_basic_replay_information(&mut self, info: &ReplayParserOutput) {
-        self.slots = info.metadata.slot_records.clone();
-        self.player_list = info.metadata.player_records.clone();
-        self.meta = Some(info.metadata.clone());
+    fn set_context(&mut self, subheader: SubHeader, mut metadata: ReplayMetadata) {
+        metadata.game_data = Vec::new();
+        self.context = Some(ReplayContext {
+            subheader,
+            metadata,
+        });
+    }
 
+    fn set_context_from_metadata(&mut self, subheader: SubHeader, metadata: &ReplayMetadata) {
+        self.context = Some(ReplayContext {
+            subheader,
+            metadata: clone_metadata_without_game_data(metadata),
+        });
+    }
+
+    fn handle_basic_replay_information(&mut self, metadata: &ReplayMetadata) {
         let mut temp_players: HashMap<u8, PlayerRecord> = HashMap::new();
-        for player in &self.player_list {
+        for player in &metadata.player_records {
             temp_players.insert(player.player_id, player.clone());
         }
 
-        for extra_player in &info.metadata.reforged_player_metadata {
+        for extra_player in &metadata.reforged_player_metadata {
             if let Some(player) = temp_players.get_mut(&(extra_player.player_id as u8)) {
                 player.player_name = extra_player.name.clone();
             }
         }
 
-        for (index, slot) in self.slots.iter().enumerate() {
+        for (index, slot) in metadata.slot_records.iter().enumerate() {
             if slot.slot_status > 1 {
                 self.slot_to_player_id.insert(index as u8, slot.player_id);
-                self.teams
-                    .entry(slot.team_id)
-                    .or_default()
-                    .push(slot.player_id);
 
                 let name = temp_players
                     .get(&slot.player_id)
@@ -233,7 +262,7 @@ impl W3GReplay {
                     }
                 }
             }
-            Action::BlzCacheStoreInt { .. } => self.w3mmd.push(action.clone()),
+            Action::BlzCacheStoreInt { .. } => {}
             _ => {
                 if let Some(current_player) = self.players.get_mut(&current_player_id) {
                     handle_action_for_player(action, current_player, self.total_time_tracker);
@@ -311,11 +340,11 @@ impl W3GReplay {
     }
 
     fn is_observer(&self, player: &Player) -> bool {
-        let Some(info) = &self.info else {
+        let Some(context) = &self.context else {
             return false;
         };
-        (player.teamid == 24 && info.subheader.version >= 29)
-            || (player.teamid == 12 && info.subheader.version < 29)
+        (player.teamid == 24 && context.subheader.version >= 29)
+            || (player.teamid == 12 && context.subheader.version < 29)
     }
 
     fn determine_matchup(&mut self) {
@@ -346,12 +375,10 @@ impl W3GReplay {
     }
 
     fn generate_id(&mut self) {
-        let Some(info) = &self.info else {
+        let Some(context) = &self.context else {
             return;
         };
-        let Some(meta) = &self.meta else {
-            return;
-        };
+        let meta = &context.metadata;
 
         let mut players = self
             .players
@@ -364,10 +391,7 @@ impl W3GReplay {
             .map(|player| player.name.as_str())
             .collect::<String>();
 
-        let id_base = format!(
-            "{}{}{}",
-            info.metadata.random_seed, player_names, meta.game_name
-        );
+        let id_base = format!("{}{}{}", meta.random_seed, player_names, meta.game_name);
         self.id = to_hex(&Sha256::digest(id_base.as_bytes()));
     }
 
@@ -394,14 +418,11 @@ impl W3GReplay {
     }
 
     fn finalize(&self, parse_start: Instant) -> Result<ParserOutput> {
-        let info = self
-            .info
+        let context = self
+            .context
             .as_ref()
-            .ok_or_else(|| Error::Message("missing replay parser output".to_string()))?;
-        let meta = self
-            .meta
-            .as_ref()
-            .ok_or_else(|| Error::Message("missing replay metadata".to_string()))?;
+            .ok_or_else(|| Error::Message("missing replay context".to_string()))?;
+        let meta = &context.metadata;
 
         let mut players = self.players.values().cloned().collect::<Vec<_>>();
         players.sort_by(sort_players);
@@ -440,10 +461,10 @@ impl W3GReplay {
                 checksum: meta.map.map_checksum.clone(),
                 checksum_sha1: meta.map.map_checksum_sha1.clone(),
             },
-            build_number: info.subheader.build_no,
-            version: game_version(info.subheader.version),
-            duration: info.subheader.replay_length_ms,
-            expansion: info.subheader.game_identifier == "PX3W",
+            build_number: context.subheader.build_no,
+            version: game_version(context.subheader.version),
+            duration: context.subheader.replay_length_ms,
+            expansion: context.subheader.game_identifier == "PX3W",
             parse_time: parse_start.elapsed().as_millis() as u64,
             winning_team_id: self.winning_team_id,
             settings,
@@ -451,21 +472,34 @@ impl W3GReplay {
     }
 }
 
+fn clone_metadata_without_game_data(metadata: &ReplayMetadata) -> ReplayMetadata {
+    ReplayMetadata {
+        game_data: Vec::new(),
+        map: metadata.map.clone(),
+        player_count: metadata.player_count,
+        game_type: metadata.game_type.clone(),
+        locale_hash: metadata.locale_hash.clone(),
+        player_records: metadata.player_records.clone(),
+        slot_records: metadata.slot_records.clone(),
+        reforged_player_metadata: metadata.reforged_player_metadata.clone(),
+        random_seed: metadata.random_seed,
+        select_mode: metadata.select_mode.clone(),
+        game_name: metadata.game_name.clone(),
+        start_spot_count: metadata.start_spot_count,
+        is_post_202_replay_format: metadata.is_post_202_replay_format,
+    }
+}
+
 impl Default for W3GReplay {
     fn default() -> Self {
         Self {
             parser: ReplayParser::new(),
-            info: None,
+            context: None,
             players: HashMap::new(),
             observers: Vec::new(),
             chatlog: Vec::new(),
             id: String::new(),
             leave_events: Vec::new(),
-            w3mmd: Vec::new(),
-            slots: Vec::new(),
-            teams: HashMap::new(),
-            meta: None,
-            player_list: Vec::new(),
             total_time_tracker: 0,
             time_segment_tracker: 0,
             player_action_track_interval: 60000,
@@ -694,6 +728,20 @@ mod tests {
             parsed.summary.version
         );
         assert!(!parsed.low_level.timed_actions().is_empty());
+    }
+
+    #[test]
+    fn summary_only_parse_matches_detailed_summary() {
+        let bytes = include_bytes!("../fixtures/replays/132/reforged1.w3g");
+        let mut summary_parser = W3GReplay::new();
+        let mut detailed_parser = W3GReplay::new();
+        let mut summary = summary_parser.parse_bytes(bytes).unwrap();
+        let mut detailed_summary = detailed_parser.parse_bytes_detailed(bytes).unwrap().summary;
+
+        summary.parse_time = 0;
+        detailed_summary.parse_time = 0;
+
+        assert_eq!(summary, detailed_summary);
     }
 
     #[test]

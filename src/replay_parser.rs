@@ -22,18 +22,44 @@ impl ReplayParser {
     }
 
     pub fn parse(&self, input: &[u8]) -> Result<ReplayParserOutput> {
-        let raw = self.raw_parser.parse(input)?;
-        let metadata = self.metadata_parser.parse(&raw.blocks)?;
-        let game_data_blocks = self
-            .game_data_parser
-            .parse(&metadata.game_data, metadata.is_post_202_replay_format)?;
+        let prefix = self.parse_prefix(input)?;
+        let game_data_blocks = self.game_data_parser.parse(
+            &prefix.metadata.game_data,
+            prefix.metadata.is_post_202_replay_format,
+        )?;
 
         Ok(ReplayParserOutput {
+            header: prefix.header,
+            subheader: prefix.subheader,
+            metadata: prefix.metadata,
+            game_data_blocks,
+        })
+    }
+
+    pub(crate) fn parse_prefix(&self, input: &[u8]) -> Result<ReplayParserPrefix> {
+        let raw = self.raw_parser.parse(input)?;
+        let metadata = self.metadata_parser.parse(&raw.blocks)?;
+
+        Ok(ReplayParserPrefix {
             header: raw.header,
             subheader: raw.subheader,
             metadata,
-            game_data_blocks,
         })
+    }
+
+    pub(crate) fn parse_game_data_with<F>(
+        &self,
+        metadata: &ReplayMetadata,
+        visitor: F,
+    ) -> Result<()>
+    where
+        F: FnMut(GameDataBlock) -> Result<()>,
+    {
+        self.game_data_parser.parse_with(
+            &metadata.game_data,
+            metadata.is_post_202_replay_format,
+            visitor,
+        )
     }
 }
 
@@ -44,6 +70,13 @@ pub struct ReplayParserOutput {
     pub subheader: SubHeader,
     pub metadata: ReplayMetadata,
     pub game_data_blocks: Vec<GameDataBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReplayParserPrefix {
+    pub header: Header,
+    pub subheader: SubHeader,
+    pub metadata: ReplayMetadata,
 }
 
 impl ReplayParserOutput {

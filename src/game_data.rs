@@ -101,18 +101,35 @@ impl GameDataParser {
         data: &[u8],
         is_post_202_replay_format: bool,
     ) -> Result<Vec<GameDataBlock>> {
-        let mut parser = StatefulBufferParser::new(data);
         let mut blocks = Vec::new();
+        self.parse_with(data, is_post_202_replay_format, |block| {
+            blocks.push(block);
+            Ok(())
+        })?;
+
+        Ok(blocks)
+    }
+
+    pub fn parse_with<F>(
+        &self,
+        data: &[u8],
+        is_post_202_replay_format: bool,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        F: FnMut(GameDataBlock) -> Result<()>,
+    {
+        let mut parser = StatefulBufferParser::new(data);
 
         while !parser.is_done() {
             match parse_block(&mut parser, is_post_202_replay_format) {
-                Ok(Some(block)) => blocks.push(block),
+                Ok(Some(block)) => visitor(block)?,
                 Ok(None) => {}
                 Err(error) => return Err(error),
             }
         }
 
-        Ok(blocks)
+        Ok(())
     }
 }
 
