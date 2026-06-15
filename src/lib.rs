@@ -26,6 +26,4 @@ pub use game_data::GameDataParser;
 pub use metadata::MetadataParser;
 pub use raw::RawParser;
 pub use replay::{ObserverMode, ParsedReplay, ParserOutput, W3GReplay};
-pub use replay_parser::{
-    ReplayParser, ReplayParserOutput, TimedAction, TimedActions,
-};
+pub use replay_parser::{ReplayParser, ReplayParserOutput, TimedAction, TimedActions};

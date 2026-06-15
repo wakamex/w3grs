@@ -120,11 +120,7 @@ fn parse_blocks(parser: &mut StatefulBufferParser<'_>, build_no: u16) -> Result<
     let mut blocks = Vec::new();
 
     while !parser.is_done() {
-        let block = match parse_block(parser, build_no) {
-            Ok(block) => block,
-            Err(Error::UnexpectedEof { .. }) => break,
-            Err(error) => return Err(error),
-        };
+        let block = parse_block(parser, build_no)?;
         if block.block_decompressed_size == FULL_DECOMPRESSED_BLOCK_SIZE {
             blocks.push(block);
         }
@@ -194,5 +190,28 @@ mod tests {
         assert_eq!(raw.subheader.version, 26);
         assert_eq!(raw.subheader.build_no, 6059);
         assert!(!raw.blocks.is_empty());
+    }
+
+    #[test]
+    fn rejects_truncated_raw_block_header() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"Warcraft III recorded game\0");
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"PX3W");
+        bytes.extend_from_slice(&10032u32.to_le_bytes());
+        bytes.extend_from_slice(&6091u16.to_le_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.push(0x01);
+
+        assert!(matches!(
+            RawParser::new().parse(&bytes),
+            Err(Error::UnexpectedEof { .. })
+        ));
     }
 }

@@ -108,7 +108,6 @@ impl GameDataParser {
             match parse_block(&mut parser, is_post_202_replay_format) {
                 Ok(Some(block)) => blocks.push(block),
                 Ok(None) => {}
-                Err(Error::UnexpectedEof { .. }) => break,
                 Err(error) => return Err(error),
             }
         }
@@ -206,8 +205,13 @@ fn parse_timeslot_block(
     while parser.offset() < action_block_last_offset {
         let player_id = parser.read_u8()?;
         let action_block_length = parser.read_u16_le()? as usize;
-        let actions = parser.read_bytes(action_block_length)?;
+        let action_start = parser.offset();
+        let action_end = action_start
+            .saturating_add(action_block_length)
+            .min(parser.buffer().len());
+        let actions = &parser.buffer()[action_start..action_end];
         let actions = action_parser.parse(actions, is_post_202_replay_format)?;
+        parser.set_offset(action_start.saturating_add(action_block_length));
         command_blocks.push(CommandBlock { player_id, actions });
     }
 
@@ -238,5 +242,15 @@ mod tests {
             .filter(|block| matches!(block, GameDataBlock::Timeslot(_)))
             .count();
         assert!(timeslots > 50);
+    }
+
+    #[test]
+    fn rejects_truncated_game_data_block() {
+        let truncated_timeslot_header = [0x1f, 0x03];
+
+        assert!(matches!(
+            GameDataParser::new().parse(&truncated_timeslot_header, false),
+            Err(Error::UnexpectedEof { .. })
+        ));
     }
 }

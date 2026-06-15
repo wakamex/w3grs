@@ -75,6 +75,46 @@ fn main() -> w3grs::Result<()> {
 }
 ```
 
+## Upstream Parity
+
+From a development checkout, check every replay fixture in `upstream/w3gjs/test/replays` for output parity against `w3gjs`:
+
+```sh
+node scripts/compare-all.mjs --prepare --iterations 3 --warmup 1
+```
+
+The parity sweep reports:
+
+- exact canonical JSON byte parity, including `parseTime`
+- normalized canonical JSON parity with `parseTime` removed
+
+`parseTime` is expected to break exact parity because it measures each parser's runtime. Normalized parity is the useful output-equivalence signal.
+
+Useful options:
+
+```sh
+node scripts/compare-all.mjs --json
+node scripts/compare-all.mjs --fail-on-mismatch --write-mismatches tmp/parity
+```
+
+Recent local parity result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
+
+```text
+Replays: 50
+Exact byte parity: 0/50 (mismatches include expected parseTime differences)
+Normalized parity without parseTime: 50/50
+```
+
+### Intentional Divergences
+
+`w3grs` is stricter than `w3gjs` about required replay metadata structure. For example, the metadata parser returns an error when the lobby setup marker is not the expected `0x19` byte, while `w3gjs` logs the unknown chunk and keeps parsing. This is intentional: the marker is an internal W3G consistency check, not a user-facing replay metric, and treating an invalid marker as an error helps catch corrupt or out-of-sync replay metadata early. Nearby length fields such as `remainingBytes` are likewise internal format fields.
+
+`w3grs` also treats incomplete raw replay blocks and malformed top-level game-data block headers as parse errors instead of returning partial data. Inside timeslots, it keeps `w3gjs`'s best-effort behavior for clipped action payloads.
+
+For unknown-player gameplay records, `w3grs` is more tolerant than `w3gjs`: command blocks and chat messages for players that are not present in the lobby metadata are ignored rather than logged or allowed to throw. This keeps library parsing quiet and fallible through `Result` instead of process output or panics.
+
+The low-level Rust API also returns parsed `game_data_blocks` directly instead of exposing them only through Node-style events. This keeps the same underlying replay data but presents it in a Rust-friendly result structure.
+
 ## Benchmark
 
 From a development checkout with the submodule initialized, compare local `w3gjs` and `w3grs` parsing speed on the same replay:
@@ -111,42 +151,21 @@ Benchmark results vary by machine, replay, iteration count, and current CPU load
 node scripts/benchmark.mjs upstream/w3gjs/test/replays/132/reforged1.w3g --iterations 100 --warmup 10
 ```
 
-## Upstream Parity And Speed Sweep
+### All-Replay Speed Sweep
 
-From a development checkout, check every replay fixture in `upstream/w3gjs/test/replays` for output parity while timing both parsers:
+The parity script also times both parsers across the whole upstream replay corpus:
 
 ```sh
-node scripts/compare-all.mjs --prepare --iterations 3 --warmup 1
+node scripts/compare-all.mjs --prepare --iterations 10 --warmup 2
 ```
 
-The sweep reports:
+The speed sweep reports:
 
-- exact canonical JSON byte parity, including `parseTime`
-- normalized canonical JSON parity with `parseTime` removed
 - `w3gjs` and `w3grs` mean parse time per replay
 - aggregate mean/min/max speedup
 
-`parseTime` is expected to break exact parity because it measures each parser's runtime. Normalized parity is the useful output-equivalence signal.
-
-## Intentional Divergences
-
-`w3grs` is stricter than `w3gjs` about required replay metadata structure. For example, the metadata parser returns an error when the lobby setup marker is not the expected `0x19` byte, while `w3gjs` logs the unknown chunk and keeps parsing. This is intentional: the marker is an internal W3G consistency check, not a user-facing replay metric, and treating an invalid marker as an error helps catch corrupt or out-of-sync replay metadata early. Nearby length fields such as `remainingBytes` are likewise internal format fields.
-
-The low-level Rust API also returns parsed `game_data_blocks` directly instead of exposing them only through Node-style events. This keeps the same underlying replay data but presents it in a Rust-friendly result structure.
-
-Useful options:
-
-```sh
-node scripts/compare-all.mjs --iterations 10 --warmup 2
-node scripts/compare-all.mjs --json
-node scripts/compare-all.mjs --fail-on-mismatch --write-mismatches tmp/parity
-```
-
-Recent local smoke result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
+Recent local speed result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
 
 ```text
-Replays: 50
-Exact byte parity: 0/50 (mismatches include expected parseTime differences)
-Normalized parity without parseTime: 50/50
-Speedup mean/min/max: 17.99x / 2.81x / 78.62x
+Speedup mean/min/max: 20.07x / 2.93x / 95.10x
 ```

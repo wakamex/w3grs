@@ -45,17 +45,35 @@ pub fn game_version(version: u32) -> String {
 }
 
 pub fn map_filename(map_path: &str) -> String {
-    let filename = map_path
-        .rsplit(|char| ['\\', '/'].contains(&char))
-        .next()
-        .unwrap_or("");
+    let bytes = map_path.as_bytes();
+    let mut segment_start = 0;
 
-    let lower = filename.to_ascii_lowercase();
-    if lower.ends_with(".w3x") || lower.ends_with(".w3m") {
-        filename.to_string()
-    } else {
-        String::new()
+    while segment_start < bytes.len() {
+        let segment_end = bytes[segment_start..]
+            .iter()
+            .position(|byte| matches!(byte, b'\\' | b'/'))
+            .map_or(bytes.len(), |offset| segment_start + offset);
+        let segment = &map_path[segment_start..segment_end];
+
+        if let Some(end) = last_w3gjs_map_extension_end(segment) {
+            return segment[..end].to_string();
+        }
+
+        segment_start = segment_end.saturating_add(1);
     }
+
+    String::new()
+}
+
+fn last_w3gjs_map_extension_end(segment: &str) -> Option<usize> {
+    let bytes = segment.as_bytes();
+    if bytes.len() < 5 {
+        return None;
+    }
+
+    (1..=bytes.len() - 4).rev().find_map(|index| {
+        matches!(&bytes[index..index + 4], b".w3x" | b".w3m").then_some(index + 4)
+    })
 }
 
 #[cfg(test)]
@@ -76,5 +94,13 @@ mod tests {
         assert_eq!(map_filename("Maps//test//somemap.w3x"), "somemap.w3x");
         assert_eq!(map_filename("Maps//test\\somemap.w3x"), "somemap.w3x");
         assert_eq!(map_filename("Maps\\test//somemap.w3x"), "somemap.w3x");
+    }
+
+    #[test]
+    fn extracts_map_filename_like_w3gjs_regex() {
+        assert_eq!(map_filename("Maps\\test\\somemap.W3X"), "");
+        assert_eq!(map_filename("Maps\\test\\somemap.w3x.tmp"), "somemap.w3x");
+        assert_eq!(map_filename("Maps\\test\\somemap.w3m"), "somemap.w3m");
+        assert_eq!(map_filename("Maps\\test\\.w3x"), "");
     }
 }
