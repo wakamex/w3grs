@@ -60,7 +60,6 @@ impl ReplayParserOutput {
 pub struct TimedAction<'a> {
     pub action: &'a Action,
     pub time_ms: u32,
-    pub frame: u32,
     pub block_id: u8,
     pub player_id: u8,
     pub sequence: usize,
@@ -73,7 +72,6 @@ pub struct TimedActions<'a> {
     command_index: usize,
     action_index: usize,
     time_ms: u32,
-    frame: u32,
     block_id: u8,
     sequence: usize,
     in_timeslot: bool,
@@ -87,7 +85,6 @@ impl<'a> TimedActions<'a> {
             command_index: 0,
             action_index: 0,
             time_ms: 0,
-            frame: 0,
             block_id: 0,
             sequence: 0,
             in_timeslot: false,
@@ -108,7 +105,6 @@ impl<'a> Iterator for TimedActions<'a> {
 
             if !self.in_timeslot {
                 self.time_ms += u32::from(timeslot.time_increment);
-                self.frame = frame_from_ms(self.time_ms);
                 self.block_id = timeslot.id;
                 self.command_index = 0;
                 self.action_index = 0;
@@ -125,7 +121,6 @@ impl<'a> Iterator for TimedActions<'a> {
                     return Some(TimedAction {
                         action,
                         time_ms: self.time_ms,
-                        frame: self.frame,
                         block_id: self.block_id,
                         player_id: command.player_id,
                         sequence,
@@ -144,10 +139,6 @@ impl<'a> Iterator for TimedActions<'a> {
     }
 }
 
-pub fn frame_from_ms(ms: u32) -> u32 {
-    ((u64::from(ms) * 64 + 500) / 1000) as u32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,7 +151,6 @@ mod tests {
 
         assert!(!actions.is_empty());
         assert_eq!(actions[0].time_ms, 1372);
-        assert_eq!(actions[0].frame, 88);
         assert_eq!(actions[0].block_id, 31);
         assert_eq!(actions[0].player_id, 2);
         assert_eq!(actions[0].sequence, 0);

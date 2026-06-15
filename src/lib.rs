@@ -27,5 +27,5 @@ pub use metadata::MetadataParser;
 pub use raw::RawParser;
 pub use replay::{ObserverMode, ParsedReplay, ParserOutput, W3GReplay};
 pub use replay_parser::{
-    ReplayParser, ReplayParserOutput, TimedAction, TimedActions, frame_from_ms,
+    ReplayParser, ReplayParserOutput, TimedAction, TimedActions,
 };
