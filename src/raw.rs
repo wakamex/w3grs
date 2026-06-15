@@ -69,16 +69,21 @@ impl RawParser {
 }
 
 pub fn get_uncompressed_data(blocks: &[DataBlock]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    for block in blocks {
-        let mut decoder = ZlibDecoder::new(block.block_content.as_slice());
-        let mut inflated = Vec::with_capacity(block.block_decompressed_size as usize);
-        decoder.read_to_end(&mut inflated)?;
+    let capacity = blocks
+        .iter()
+        .map(|block| block.block_decompressed_size as usize)
+        .sum();
+    let mut out = Vec::with_capacity(capacity);
 
-        if !inflated.is_empty() && !block.block_content.is_empty() {
-            out.extend(inflated);
+    for block in blocks {
+        if block.block_content.is_empty() {
+            continue;
         }
+
+        let mut decoder = ZlibDecoder::new(block.block_content.as_slice());
+        decoder.read_to_end(&mut out)?;
     }
+
     Ok(out)
 }
 
