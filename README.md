@@ -61,8 +61,8 @@ fn main() -> w3grs::Result<()> {
     println!("{} on {}", parsed.summary.matchup, parsed.summary.map.file);
     for timed in parsed.low_level.timed_actions() {
         println!(
-            "frame={} player={} action=0x{:02x}",
-            timed.frame,
+            "time_ms={} player={} action=0x{:02x}",
+            timed.time_ms,
             timed.player_id,
             timed.action.id()
         );
