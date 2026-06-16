@@ -34,7 +34,11 @@ pub struct ObjectTracker {
 
 impl ObjectTracker {
     fn push(&mut self, id: &str, ms: u32) {
-        *self.summary.entry(id.to_string()).or_insert(0) += 1;
+        if let Some(count) = self.summary.get_mut(id) {
+            *count += 1;
+        } else {
+            self.summary.insert(id.to_string(), 1);
+        }
         self.order.push(ObjectOrderEntry {
             id: id.to_string(),
             ms,
