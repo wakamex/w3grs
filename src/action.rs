@@ -225,23 +225,22 @@ impl Action {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum SummaryAction {
-    UnitBuildingAbilityNoParams { order_id: FourCC },
-    UnitBuildingAbilityTargetPosition { order_id: FourCC },
-    UnitBuildingAbilityTargetPositionObject { order_id: FourCC },
-    GiveItemToUnit,
-    UnitBuildingAbilityTwoTargetPositions { order_id1: FourCC },
-    ChangeSelection { select_mode: u8 },
-    AssignGroupHotkey { group_number: u8 },
-    SelectGroupHotkey { group_number: u8 },
-    SelectGroundItem,
-    CancelHeroRevival,
-    RemoveUnitFromBuildingQueue,
-    TransferResources { slot: u8, gold: u32, lumber: u32 },
-    EscPressed,
-    ChooseHeroSkillSubmenu,
-    EnterBuildingSubmenu,
+pub(crate) trait SummaryActionVisitor {
+    fn unit_building_ability_no_params(&mut self, order_id: FourCC) -> Result<()>;
+    fn unit_building_ability_target_position(&mut self, order_id: FourCC) -> Result<()>;
+    fn unit_building_ability_target_position_object(&mut self, order_id: FourCC) -> Result<()>;
+    fn give_item_to_unit(&mut self) -> Result<()>;
+    fn unit_building_ability_two_target_positions(&mut self, order_id1: FourCC) -> Result<()>;
+    fn change_selection(&mut self, select_mode: u8) -> Result<()>;
+    fn assign_group_hotkey(&mut self, group_number: u8) -> Result<()>;
+    fn select_group_hotkey(&mut self, group_number: u8) -> Result<()>;
+    fn select_ground_item(&mut self) -> Result<()>;
+    fn cancel_hero_revival(&mut self) -> Result<()>;
+    fn remove_unit_from_building_queue(&mut self) -> Result<()>;
+    fn transfer_resources(&mut self, slot: u8, gold: u32, lumber: u32) -> Result<()>;
+    fn esc_pressed(&mut self) -> Result<()>;
+    fn choose_hero_skill_submenu(&mut self) -> Result<()>;
+    fn enter_building_submenu(&mut self) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -581,22 +580,26 @@ impl ActionParser {
         Ok(actions)
     }
 
-    pub(crate) fn parse_summary_with<F>(
+    pub(crate) fn parse_summary_with<V>(
         &mut self,
         input: &[u8],
         is_post_202_replay_format: bool,
-        mut visitor: F,
+        visitor: &mut V,
     ) -> Result<()>
     where
-        F: FnMut(SummaryAction) -> Result<()>,
+        V: SummaryActionVisitor,
     {
         let mut parser = StatefulBufferParser::new(input);
 
         while !parser.is_done() {
             let action_id = parser.read_u8()?;
-            match self.parse_summary_action(&mut parser, action_id, is_post_202_replay_format) {
-                Ok(Some(action)) => visitor(action)?,
-                Ok(None) => {}
+            match self.parse_summary_action(
+                &mut parser,
+                action_id,
+                is_post_202_replay_format,
+                visitor,
+            ) {
+                Ok(_) => {}
                 Err(Error::UnexpectedEof { .. }) => break,
                 Err(error) => return Err(error),
             }
@@ -605,27 +608,31 @@ impl ActionParser {
         Ok(())
     }
 
-    pub(crate) fn parse_summary_with_stats<F>(
+    pub(crate) fn parse_summary_with_stats<V>(
         &mut self,
         input: &[u8],
         is_post_202_replay_format: bool,
         stats: &mut SummaryActionStats,
-        mut visitor: F,
+        visitor: &mut V,
     ) -> Result<()>
     where
-        F: FnMut(SummaryAction) -> Result<()>,
+        V: SummaryActionVisitor,
     {
         let mut parser = StatefulBufferParser::new(input);
 
         while !parser.is_done() {
             let action_id = parser.read_u8()?;
             stats.actions += 1;
-            match self.parse_summary_action(&mut parser, action_id, is_post_202_replay_format) {
-                Ok(Some(action)) => {
+            match self.parse_summary_action(
+                &mut parser,
+                action_id,
+                is_post_202_replay_format,
+                visitor,
+            ) {
+                Ok(true) => {
                     stats.emitted_actions += 1;
-                    visitor(action)?;
                 }
-                Ok(None) => stats.ignored_actions += 1,
+                Ok(false) => stats.ignored_actions += 1,
                 Err(Error::UnexpectedEof { .. }) => break,
                 Err(error) => return Err(error),
             }
@@ -651,218 +658,240 @@ impl ActionParser {
         parser: &mut StatefulBufferParser<'_>,
         action_id: u8,
         is_post_202_replay_format: bool,
-    ) -> Result<Option<SummaryAction>> {
+        visitor: &mut impl SummaryActionVisitor,
+    ) -> Result<bool> {
         let action_id = normalize_action_id(action_id, is_post_202_replay_format);
         let result = match action_id {
             0x01 => {
                 parser.skip(1)?;
-                None
+                false
             }
-            0x02 => None,
+            0x02 => false,
             0x03 => {
                 parser.skip(1)?;
-                None
+                false
             }
-            0x04 | 0x05 => None,
+            0x04 | 0x05 => false,
             0x06 => {
                 skip_zero_term_string(parser)?;
                 skip_zero_term_string(parser)?;
                 parser.skip(1)?;
-                None
+                false
             }
             0x07 => {
                 parser.skip(4)?;
-                None
+                false
             }
             0x10 => {
                 parser.skip(2)?;
                 let order_id = read_fourcc(parser)?;
                 parser.skip(8)?;
-                Some(SummaryAction::UnitBuildingAbilityNoParams { order_id })
+                visitor.unit_building_ability_no_params(order_id)?;
+                true
             }
             0x11 => {
                 parser.skip(2)?;
                 let order_id = read_fourcc(parser)?;
                 parser.skip(16)?;
-                Some(SummaryAction::UnitBuildingAbilityTargetPosition { order_id })
+                visitor.unit_building_ability_target_position(order_id)?;
+                true
             }
             0x12 => {
                 parser.skip(2)?;
                 let order_id = read_fourcc(parser)?;
                 parser.skip(24)?;
-                Some(SummaryAction::UnitBuildingAbilityTargetPositionObject { order_id })
+                visitor.unit_building_ability_target_position_object(order_id)?;
+                true
             }
             0x13 => {
                 parser.skip(38)?;
-                Some(SummaryAction::GiveItemToUnit)
+                visitor.give_item_to_unit()?;
+                true
             }
             0x14 => {
                 parser.skip(2)?;
                 let order_id1 = read_fourcc(parser)?;
                 parser.skip(37)?;
-                Some(SummaryAction::UnitBuildingAbilityTwoTargetPositions { order_id1 })
+                visitor.unit_building_ability_two_target_positions(order_id1)?;
+                true
             }
             0x15 => {
                 parser.skip(51)?;
-                None
+                false
             }
             0x19 => {
                 parser.skip(12)?;
-                None
+                false
             }
-            0x1a => None,
+            0x1a => false,
             0x1b => {
                 parser.skip(9)?;
-                None
+                false
             }
             0x16 => {
                 let select_mode = parser.read_u8()?;
                 let number_units = parser.read_u16_le()?;
                 skip_selection_units(parser, number_units)?;
-                Some(SummaryAction::ChangeSelection { select_mode })
+                visitor.change_selection(select_mode)?;
+                true
             }
             0x17 => {
                 let group_number = parser.read_u8()?;
                 let number_units = parser.read_u16_le()?;
                 skip_selection_units(parser, number_units)?;
-                Some(SummaryAction::AssignGroupHotkey { group_number })
+                visitor.assign_group_hotkey(group_number)?;
+                true
             }
             0x18 => {
                 let group_number = parser.read_u8()?;
                 parser.skip(1)?;
-                Some(SummaryAction::SelectGroupHotkey { group_number })
+                visitor.select_group_hotkey(group_number)?;
+                true
             }
             0x1c => {
                 parser.skip(9)?;
-                Some(SummaryAction::SelectGroundItem)
+                visitor.select_ground_item()?;
+                true
             }
             0x1d => {
                 parser.skip(8)?;
-                Some(SummaryAction::CancelHeroRevival)
+                visitor.cancel_hero_revival()?;
+                true
             }
             0x1e | 0x1f => {
                 parser.skip(5)?;
-                Some(SummaryAction::RemoveUnitFromBuildingQueue)
+                visitor.remove_unit_from_building_queue()?;
+                true
             }
-            0x20 => None,
+            0x20 => false,
             0x21 => {
                 parser.skip(8)?;
-                None
+                false
             }
-            0x22..=0x26 => None,
+            0x22..=0x26 => false,
             0x27 | 0x28 => {
                 parser.skip(5)?;
-                None
+                false
             }
-            0x29..=0x2c => None,
+            0x29..=0x2c => false,
             0x2d => {
                 parser.skip(5)?;
-                None
+                false
             }
             0x2e => {
                 parser.skip(4)?;
-                None
+                false
             }
-            0x2f => None,
+            0x2f => false,
             0x50 => {
                 parser.skip(5)?;
-                None
+                false
             }
             0x51 => {
                 let slot = parser.read_u8()?;
                 let gold = parser.read_u32_le()?;
                 let lumber = parser.read_u32_le()?;
-                Some(SummaryAction::TransferResources { slot, gold, lumber })
+                visitor.transfer_resources(slot, gold, lumber)?;
+                true
             }
             0x60 => {
                 parser.skip(8)?;
                 skip_zero_term_string(parser)?;
-                None
+                false
             }
-            0x61 => Some(SummaryAction::EscPressed),
+            0x61 => {
+                visitor.esc_pressed()?;
+                true
+            }
             0x62 => {
                 parser.skip(12)?;
-                None
+                false
             }
             0x63 | 0x64 => {
                 parser.skip(8)?;
-                None
+                false
             }
             0x65 => {
                 parser.skip(8)?;
-                None
+                false
             }
-            0x66 => Some(SummaryAction::ChooseHeroSkillSubmenu),
-            0x67 => Some(SummaryAction::EnterBuildingSubmenu),
+            0x66 => {
+                visitor.choose_hero_skill_submenu()?;
+                true
+            }
+            0x67 => {
+                visitor.enter_building_submenu()?;
+                true
+            }
             0x68 => {
                 parser.skip(12)?;
-                None
+                false
             }
             0x69 | 0x6a => {
                 parser.skip(16)?;
-                None
+                false
             }
             0x6b | 0x6c => {
                 skip_cache_desc(parser)?;
                 parser.skip(4)?;
-                None
+                false
             }
             0x6d => {
                 skip_cache_desc(parser)?;
                 parser.skip(1)?;
-                None
+                false
             }
             0x6e => {
                 skip_cache_desc(parser)?;
                 skip_cache_unit(parser)?;
-                None
+                false
             }
             0x70..=0x73 => {
                 skip_cache_desc(parser)?;
-                None
+                false
             }
             0x75 => {
                 parser.skip(1)?;
-                None
+                false
             }
             0x76 => {
                 parser.skip(10)?;
-                None
+                false
             }
             0x77 => {
                 parser.skip(8)?;
                 let buff_len = parser.read_u32_le()? as usize;
                 skip_usize(parser, buff_len)?;
-                None
+                false
             }
             0x78 => {
                 skip_zero_term_string(parser)?;
                 skip_zero_term_string(parser)?;
                 parser.skip(4)?;
-                None
+                false
             }
             0x79 => {
                 parser.skip(16)?;
                 skip_zero_term_string(parser)?;
-                None
+                false
             }
             0x7a => {
                 parser.skip(20)?;
-                None
+                false
             }
             0x7b => {
                 parser.skip(16)?;
-                None
+                false
             }
             0xa0 => {
                 parser.skip(14)?;
-                None
+                false
             }
             0xa1 => {
                 parser.skip(9)?;
-                None
+                false
             }
-            _ => None,
+            _ => false,
         };
 
         self.old_action_id = action_id;

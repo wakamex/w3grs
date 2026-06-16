@@ -1,7 +1,7 @@
 //! Game data block parser port.
 
 use crate::{
-    action::{Action, ActionParser, SummaryAction, SummaryActionStats},
+    action::{Action, ActionParser, FourCC, SummaryActionStats, SummaryActionVisitor},
     buffer::StatefulBufferParser,
     error::{Error, Result},
 };
@@ -91,9 +91,113 @@ pub struct PlayerChatMessageBlock {
 pub(crate) trait GameDataSummaryVisitor {
     fn handle_time_increment(&mut self, time_increment: u16) -> Result<()>;
     fn begin_command_block(&mut self, player_id: u8) -> Result<bool>;
-    fn handle_summary_action(&mut self, player_id: u8, action: SummaryAction) -> Result<()>;
+    fn unit_building_ability_no_params(&mut self, player_id: u8, order_id: FourCC) -> Result<()>;
+    fn unit_building_ability_target_position(
+        &mut self,
+        player_id: u8,
+        order_id: FourCC,
+    ) -> Result<()>;
+    fn unit_building_ability_target_position_object(
+        &mut self,
+        player_id: u8,
+        order_id: FourCC,
+    ) -> Result<()>;
+    fn give_item_to_unit(&mut self, player_id: u8) -> Result<()>;
+    fn unit_building_ability_two_target_positions(
+        &mut self,
+        player_id: u8,
+        order_id1: FourCC,
+    ) -> Result<()>;
+    fn change_selection(&mut self, player_id: u8, select_mode: u8) -> Result<()>;
+    fn assign_group_hotkey(&mut self, player_id: u8, group_number: u8) -> Result<()>;
+    fn select_group_hotkey(&mut self, player_id: u8, group_number: u8) -> Result<()>;
+    fn select_ground_item(&mut self, player_id: u8) -> Result<()>;
+    fn cancel_hero_revival(&mut self, player_id: u8) -> Result<()>;
+    fn remove_unit_from_building_queue(&mut self, player_id: u8) -> Result<()>;
+    fn transfer_resources(&mut self, player_id: u8, slot: u8, gold: u32, lumber: u32)
+    -> Result<()>;
+    fn esc_pressed(&mut self, player_id: u8) -> Result<()>;
+    fn choose_hero_skill_submenu(&mut self, player_id: u8) -> Result<()>;
+    fn enter_building_submenu(&mut self, player_id: u8) -> Result<()>;
     fn handle_chat_message(&mut self, chat: PlayerChatMessageBlock) -> Result<()>;
     fn handle_leave_game(&mut self, leave: LeaveGameBlock) -> Result<()>;
+}
+
+struct PlayerSummaryActionVisitor<'a, V> {
+    player_id: u8,
+    visitor: &'a mut V,
+}
+
+impl<V> SummaryActionVisitor for PlayerSummaryActionVisitor<'_, V>
+where
+    V: GameDataSummaryVisitor,
+{
+    fn unit_building_ability_no_params(&mut self, order_id: FourCC) -> Result<()> {
+        self.visitor
+            .unit_building_ability_no_params(self.player_id, order_id)
+    }
+
+    fn unit_building_ability_target_position(&mut self, order_id: FourCC) -> Result<()> {
+        self.visitor
+            .unit_building_ability_target_position(self.player_id, order_id)
+    }
+
+    fn unit_building_ability_target_position_object(&mut self, order_id: FourCC) -> Result<()> {
+        self.visitor
+            .unit_building_ability_target_position_object(self.player_id, order_id)
+    }
+
+    fn give_item_to_unit(&mut self) -> Result<()> {
+        self.visitor.give_item_to_unit(self.player_id)
+    }
+
+    fn unit_building_ability_two_target_positions(&mut self, order_id1: FourCC) -> Result<()> {
+        self.visitor
+            .unit_building_ability_two_target_positions(self.player_id, order_id1)
+    }
+
+    fn change_selection(&mut self, select_mode: u8) -> Result<()> {
+        self.visitor.change_selection(self.player_id, select_mode)
+    }
+
+    fn assign_group_hotkey(&mut self, group_number: u8) -> Result<()> {
+        self.visitor
+            .assign_group_hotkey(self.player_id, group_number)
+    }
+
+    fn select_group_hotkey(&mut self, group_number: u8) -> Result<()> {
+        self.visitor
+            .select_group_hotkey(self.player_id, group_number)
+    }
+
+    fn select_ground_item(&mut self) -> Result<()> {
+        self.visitor.select_ground_item(self.player_id)
+    }
+
+    fn cancel_hero_revival(&mut self) -> Result<()> {
+        self.visitor.cancel_hero_revival(self.player_id)
+    }
+
+    fn remove_unit_from_building_queue(&mut self) -> Result<()> {
+        self.visitor.remove_unit_from_building_queue(self.player_id)
+    }
+
+    fn transfer_resources(&mut self, slot: u8, gold: u32, lumber: u32) -> Result<()> {
+        self.visitor
+            .transfer_resources(self.player_id, slot, gold, lumber)
+    }
+
+    fn esc_pressed(&mut self) -> Result<()> {
+        self.visitor.esc_pressed(self.player_id)
+    }
+
+    fn choose_hero_skill_submenu(&mut self) -> Result<()> {
+        self.visitor.choose_hero_skill_submenu(self.player_id)
+    }
+
+    fn enter_building_submenu(&mut self) -> Result<()> {
+        self.visitor.enter_building_submenu(self.player_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -399,9 +503,12 @@ where
 
         if visitor.begin_command_block(player_id)? {
             let actions = &parser.buffer()[action_start..action_end];
-            action_parser.parse_summary_with(actions, is_post_202_replay_format, |action| {
-                visitor.handle_summary_action(player_id, action)
-            })?;
+            let mut player_visitor = PlayerSummaryActionVisitor { player_id, visitor };
+            action_parser.parse_summary_with(
+                actions,
+                is_post_202_replay_format,
+                &mut player_visitor,
+            )?;
         }
 
         parser.set_offset(action_start.saturating_add(action_block_length));
@@ -446,11 +553,12 @@ where
         if visitor.begin_command_block(player_id)? {
             let actions = &parser.buffer()[action_start..action_end];
             let mut action_stats = SummaryActionStats::default();
+            let mut player_visitor = PlayerSummaryActionVisitor { player_id, visitor };
             action_parser.parse_summary_with_stats(
                 actions,
                 is_post_202_replay_format,
                 &mut action_stats,
-                |action| visitor.handle_summary_action(player_id, action),
+                &mut player_visitor,
             )?;
             stats.actions += action_stats.actions;
             stats.summary_actions += action_stats.emitted_actions;

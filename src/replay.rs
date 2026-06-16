@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Error, Result,
-    action::{Action, FourCC, SummaryAction},
+    action::{Action, FourCC},
     buffer::to_hex,
     convert::{game_version, map_filename},
     formatters::race_flag_formatter,
@@ -358,33 +358,6 @@ impl W3GReplay {
         }
     }
 
-    fn handle_summary_action_block(&mut self, action: &SummaryAction, current_player_id: u8) {
-        match action {
-            SummaryAction::TransferResources { slot, gold, lumber } => {
-                let player_id = self.slot_to_player_id[usize::from(*slot)];
-                if player_id != 0 {
-                    let player_name = self
-                        .players
-                        .get(&player_id)
-                        .map(|player| player.name.clone())
-                        .unwrap_or_default();
-                    if let Some(current_player) = self.players.get_mut(&current_player_id) {
-                        current_player.handle_0x51(*slot, *gold, *lumber, player_id, player_name);
-                    }
-                }
-            }
-            _ => {
-                if let Some(current_player) = self.players.get_mut(&current_player_id) {
-                    handle_summary_action_for_player(
-                        action,
-                        current_player,
-                        self.total_time_tracker,
-                    );
-                }
-            }
-        }
-    }
-
     fn handle_chat_message(&mut self, block: &PlayerChatMessageBlock, time_ms: u32) {
         let Some(player) = self.players.get(&block.player_id) else {
             return;
@@ -641,8 +614,145 @@ impl GameDataSummaryVisitor for W3GReplay {
         Ok(true)
     }
 
-    fn handle_summary_action(&mut self, player_id: u8, action: SummaryAction) -> Result<()> {
-        self.handle_summary_action_block(&action, player_id);
+    fn unit_building_ability_no_params(&mut self, player_id: u8, order_id: FourCC) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            if is_retraining_order_id(order_id) {
+                current_player.handle_retraining(self.total_time_tracker);
+            }
+            current_player.handle_0x10_order_id(order_id, self.total_time_tracker);
+        }
+        Ok(())
+    }
+
+    fn unit_building_ability_target_position(
+        &mut self,
+        player_id: u8,
+        order_id: FourCC,
+    ) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_0x11_order_id(order_id, self.total_time_tracker);
+        }
+        Ok(())
+    }
+
+    fn unit_building_ability_target_position_object(
+        &mut self,
+        player_id: u8,
+        order_id: FourCC,
+    ) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_0x12_order_id(order_id, self.total_time_tracker);
+        }
+        Ok(())
+    }
+
+    fn give_item_to_unit(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_0x13();
+        }
+        Ok(())
+    }
+
+    fn unit_building_ability_two_target_positions(
+        &mut self,
+        player_id: u8,
+        order_id1: FourCC,
+    ) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_0x14_order_id(order_id1);
+        }
+        Ok(())
+    }
+
+    fn change_selection(&mut self, player_id: u8, select_mode: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            if select_mode == 0x02 {
+                current_player.last_action_was_deselect = true;
+                current_player.handle_0x16(true);
+            } else {
+                if !current_player.last_action_was_deselect {
+                    current_player.handle_0x16(true);
+                }
+                current_player.last_action_was_deselect = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn assign_group_hotkey(&mut self, player_id: u8, group_number: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_assign_group_hotkey(group_number);
+        }
+        Ok(())
+    }
+
+    fn select_group_hotkey(&mut self, player_id: u8, group_number: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_select_group_hotkey(group_number);
+        }
+        Ok(())
+    }
+
+    fn select_ground_item(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_misc_apm_action();
+        }
+        Ok(())
+    }
+
+    fn cancel_hero_revival(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_misc_apm_action();
+        }
+        Ok(())
+    }
+
+    fn remove_unit_from_building_queue(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_remove_unit_from_building_queue();
+        }
+        Ok(())
+    }
+
+    fn transfer_resources(
+        &mut self,
+        current_player_id: u8,
+        slot: u8,
+        gold: u32,
+        lumber: u32,
+    ) -> Result<()> {
+        let player_id = self.slot_to_player_id[usize::from(slot)];
+        if player_id != 0 {
+            let player_name = self
+                .players
+                .get(&player_id)
+                .map(|player| player.name.clone())
+                .unwrap_or_default();
+            if let Some(current_player) = self.players.get_mut(&current_player_id) {
+                current_player.handle_0x51(slot, gold, lumber, player_id, player_name);
+            }
+        }
+        Ok(())
+    }
+
+    fn esc_pressed(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_esc_pressed();
+        }
+        Ok(())
+    }
+
+    fn choose_hero_skill_submenu(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_misc_apm_action();
+        }
+        Ok(())
+    }
+
+    fn enter_building_submenu(&mut self, player_id: u8) -> Result<()> {
+        if let Some(current_player) = self.players.get_mut(&player_id) {
+            current_player.handle_misc_apm_action();
+        }
         Ok(())
     }
 
@@ -908,57 +1018,6 @@ fn handle_action_for_player(action: &Action, current_player: &mut Player, total_
         | Action::ChooseHeroSkillSubmenu
         | Action::EnterBuildingSubmenu => current_player.handle_other(action),
         _ => {}
-    }
-}
-
-fn handle_summary_action_for_player(
-    action: &SummaryAction,
-    current_player: &mut Player,
-    total_time_tracker: u32,
-) {
-    match action {
-        SummaryAction::UnitBuildingAbilityNoParams { order_id } => {
-            if is_retraining_order_id(*order_id) {
-                current_player.handle_retraining(total_time_tracker);
-            }
-            current_player.handle_0x10_order_id(*order_id, total_time_tracker);
-        }
-        SummaryAction::UnitBuildingAbilityTargetPosition { order_id } => {
-            current_player.handle_0x11_order_id(*order_id, total_time_tracker);
-        }
-        SummaryAction::UnitBuildingAbilityTargetPositionObject { order_id } => {
-            current_player.handle_0x12_order_id(*order_id, total_time_tracker);
-        }
-        SummaryAction::GiveItemToUnit => current_player.handle_0x13(),
-        SummaryAction::UnitBuildingAbilityTwoTargetPositions { order_id1 } => {
-            current_player.handle_0x14_order_id(*order_id1);
-        }
-        SummaryAction::ChangeSelection { select_mode } => {
-            if *select_mode == 0x02 {
-                current_player.last_action_was_deselect = true;
-                current_player.handle_0x16(true);
-            } else {
-                if !current_player.last_action_was_deselect {
-                    current_player.handle_0x16(true);
-                }
-                current_player.last_action_was_deselect = false;
-            }
-        }
-        SummaryAction::AssignGroupHotkey { group_number } => {
-            current_player.handle_assign_group_hotkey(*group_number);
-        }
-        SummaryAction::SelectGroupHotkey { group_number } => {
-            current_player.handle_select_group_hotkey(*group_number);
-        }
-        SummaryAction::SelectGroundItem
-        | SummaryAction::CancelHeroRevival
-        | SummaryAction::ChooseHeroSkillSubmenu
-        | SummaryAction::EnterBuildingSubmenu => current_player.handle_misc_apm_action(),
-        SummaryAction::RemoveUnitFromBuildingQueue => {
-            current_player.handle_remove_unit_from_building_queue();
-        }
-        SummaryAction::EscPressed => current_player.handle_esc_pressed(),
-        SummaryAction::TransferResources { .. } => {}
     }
 }
 
