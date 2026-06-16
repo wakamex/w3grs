@@ -43,11 +43,25 @@ pub struct DataBlock {
     pub block_content: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BorrowedDataBlock<'a> {
+    pub block_size: u16,
+    pub block_decompressed_size: u16,
+    pub block_content: &'a [u8],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawReplayData {
     pub header: Header,
     pub subheader: SubHeader,
     pub blocks: Vec<DataBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BorrowedRawReplayData<'a> {
+    pub header: Header,
+    pub subheader: SubHeader,
+    pub blocks: Vec<BorrowedDataBlock<'a>>,
 }
 
 #[derive(Debug, Default)]
@@ -70,13 +84,59 @@ impl RawParser {
             blocks,
         })
     }
+
+    pub(crate) fn parse_borrowed<'a>(&self, input: &'a [u8]) -> Result<BorrowedRawReplayData<'a>> {
+        let mut parser = StatefulBufferParser::new(input);
+        let header = parse_header(&mut parser)?;
+        let subheader = parse_subheader(&mut parser)?;
+        let blocks = parse_blocks_borrowed(&mut parser, subheader.build_no)?;
+
+        Ok(BorrowedRawReplayData {
+            header,
+            subheader,
+            blocks,
+        })
+    }
 }
 
 pub fn get_uncompressed_data(blocks: &[DataBlock]) -> Result<Vec<u8>> {
-    let capacity = blocks
-        .iter()
-        .map(|block| block.block_decompressed_size as usize)
-        .sum();
+    get_uncompressed_blocks(blocks)
+}
+
+pub(crate) fn get_uncompressed_borrowed_data(blocks: &[BorrowedDataBlock<'_>]) -> Result<Vec<u8>> {
+    get_uncompressed_blocks(blocks)
+}
+
+trait CompressedBlock: Sync {
+    fn decompressed_size(&self) -> usize;
+    fn content(&self) -> &[u8];
+}
+
+impl CompressedBlock for DataBlock {
+    fn decompressed_size(&self) -> usize {
+        self.block_decompressed_size as usize
+    }
+
+    fn content(&self) -> &[u8] {
+        &self.block_content
+    }
+}
+
+impl CompressedBlock for BorrowedDataBlock<'_> {
+    fn decompressed_size(&self) -> usize {
+        self.block_decompressed_size as usize
+    }
+
+    fn content(&self) -> &[u8] {
+        self.block_content
+    }
+}
+
+fn get_uncompressed_blocks<B>(blocks: &[B]) -> Result<Vec<u8>>
+where
+    B: CompressedBlock,
+{
+    let capacity = blocks.iter().map(CompressedBlock::decompressed_size).sum();
     let worker_count = parallel_decompress_worker_count(blocks.len(), capacity);
     if worker_count > 1 {
         return get_uncompressed_data_parallel(blocks, capacity, worker_count);
@@ -85,7 +145,10 @@ pub fn get_uncompressed_data(blocks: &[DataBlock]) -> Result<Vec<u8>> {
     get_uncompressed_data_sequential(blocks, capacity)
 }
 
-fn get_uncompressed_data_sequential(blocks: &[DataBlock], capacity: usize) -> Result<Vec<u8>> {
+fn get_uncompressed_data_sequential<B>(blocks: &[B], capacity: usize) -> Result<Vec<u8>>
+where
+    B: CompressedBlock,
+{
     let mut out = Vec::with_capacity(capacity);
 
     for block in blocks {
@@ -95,11 +158,14 @@ fn get_uncompressed_data_sequential(blocks: &[DataBlock], capacity: usize) -> Re
     Ok(out)
 }
 
-fn get_uncompressed_data_parallel(
-    blocks: &[DataBlock],
+fn get_uncompressed_data_parallel<B>(
+    blocks: &[B],
     capacity: usize,
     worker_count: usize,
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>>
+where
+    B: CompressedBlock,
+{
     let chunk_size = blocks.len().div_ceil(worker_count);
     let mut chunks = Vec::with_capacity(worker_count);
 
@@ -107,10 +173,7 @@ fn get_uncompressed_data_parallel(
         let mut handles = Vec::with_capacity(worker_count);
         for chunk in blocks.chunks(chunk_size) {
             handles.push(scope.spawn(move || {
-                let capacity = chunk
-                    .iter()
-                    .map(|block| block.block_decompressed_size as usize)
-                    .sum();
+                let capacity = chunk.iter().map(CompressedBlock::decompressed_size).sum();
                 get_uncompressed_data_sequential(chunk, capacity)
             }));
         }
@@ -134,12 +197,16 @@ fn get_uncompressed_data_parallel(
     Ok(out)
 }
 
-fn decode_block_to_vec(block: &DataBlock, out: &mut Vec<u8>) -> Result<()> {
-    if block.block_content.is_empty() {
+fn decode_block_to_vec<B>(block: &B, out: &mut Vec<u8>) -> Result<()>
+where
+    B: CompressedBlock,
+{
+    let content = block.content();
+    if content.is_empty() {
         return Ok(());
     }
 
-    let mut decoder = ZlibDecoder::new(block.block_content.as_slice());
+    let mut decoder = ZlibDecoder::new(content);
     decoder.read_to_end(out)?;
 
     Ok(())
@@ -206,6 +273,22 @@ fn parse_blocks(parser: &mut StatefulBufferParser<'_>, build_no: u16) -> Result<
     Ok(blocks)
 }
 
+fn parse_blocks_borrowed<'a>(
+    parser: &mut StatefulBufferParser<'a>,
+    build_no: u16,
+) -> Result<Vec<BorrowedDataBlock<'a>>> {
+    let mut blocks = Vec::new();
+
+    while !parser.is_done() {
+        let block = parse_block_borrowed(parser, build_no)?;
+        if block.block_decompressed_size == FULL_DECOMPRESSED_BLOCK_SIZE {
+            blocks.push(block);
+        }
+    }
+
+    Ok(blocks)
+}
+
 fn parse_block(parser: &mut StatefulBufferParser<'_>, build_no: u16) -> Result<DataBlock> {
     let is_reforged = build_no >= 6089;
     let block_size = parser.read_u16_le()?;
@@ -224,6 +307,33 @@ fn parse_block(parser: &mut StatefulBufferParser<'_>, build_no: u16) -> Result<D
     parser.set_offset(start.saturating_add(block_size as usize));
 
     Ok(DataBlock {
+        block_size,
+        block_decompressed_size,
+        block_content,
+    })
+}
+
+fn parse_block_borrowed<'a>(
+    parser: &mut StatefulBufferParser<'a>,
+    build_no: u16,
+) -> Result<BorrowedDataBlock<'a>> {
+    let is_reforged = build_no >= 6089;
+    let block_size = parser.read_u16_le()?;
+
+    if is_reforged {
+        parser.skip(2)?;
+    }
+
+    let block_decompressed_size = parser.read_u16_le()?;
+    parser.skip(if is_reforged { 6 } else { 4 })?;
+    let start = parser.offset();
+    let end = start
+        .saturating_add(block_size as usize)
+        .min(parser.buffer().len());
+    let block_content = &parser.buffer()[start..end];
+    parser.set_offset(start.saturating_add(block_size as usize));
+
+    Ok(BorrowedDataBlock {
         block_size,
         block_decompressed_size,
         block_content,

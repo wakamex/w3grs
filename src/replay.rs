@@ -18,7 +18,7 @@ use crate::{
     },
     metadata::{MetadataParser, PlayerRecord, ReplayMetadata},
     player::Player,
-    raw::{RawParser, SubHeader, get_uncompressed_data},
+    raw::{RawParser, SubHeader, get_uncompressed_borrowed_data},
     replay_parser::{ReplayParser, ReplayParserOutput, ReplayParserSummaryPrefix},
     sort::sort_players,
 };
@@ -169,11 +169,11 @@ impl W3GReplay {
         let metadata_parser = MetadataParser::new();
 
         let started = Instant::now();
-        let raw = raw_parser.parse(bytes)?;
+        let raw = raw_parser.parse_borrowed(bytes)?;
         phases.raw_ms = elapsed_ms(started);
 
         let started = Instant::now();
-        let decompressed_data = get_uncompressed_data(&raw.blocks)?;
+        let decompressed_data = get_uncompressed_borrowed_data(&raw.blocks)?;
         phases.decompress_ms = elapsed_ms(started);
 
         let started = Instant::now();

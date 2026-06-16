@@ -5,7 +5,7 @@ use crate::{
     action::Action,
     game_data::{GameDataBlock, GameDataParser, GameDataSummaryStats, GameDataSummaryVisitor},
     metadata::{MetadataParser, ReplayMetadata},
-    raw::{Header, RawParser, SubHeader, get_uncompressed_data},
+    raw::{Header, RawParser, SubHeader, get_uncompressed_borrowed_data},
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,8 +48,8 @@ impl ReplayParser {
     }
 
     pub(crate) fn parse_summary_prefix(&self, input: &[u8]) -> Result<ReplayParserSummaryPrefix> {
-        let raw = self.raw_parser.parse(input)?;
-        let decompressed_data = get_uncompressed_data(&raw.blocks)?;
+        let raw = self.raw_parser.parse_borrowed(input)?;
+        let decompressed_data = get_uncompressed_borrowed_data(&raw.blocks)?;
         let metadata_parts = self
             .metadata_parser
             .parse_data_without_game_data(&decompressed_data)?;
