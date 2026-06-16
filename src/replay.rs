@@ -11,12 +11,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Error, Result,
-    action::Action,
+    action::{Action, SummaryAction},
     buffer::to_hex,
     convert::{game_version, map_filename},
     formatters::race_flag_formatter,
     game_data::{
-        CommandBlock, GameDataBlock, LeaveGameBlock, PlayerChatMessageBlock, TimeslotBlock,
+        CommandBlock, GameDataBlock, GameDataSummaryVisitor, LeaveGameBlock,
+        PlayerChatMessageBlock, TimeslotBlock,
     },
     metadata::{PlayerRecord, ReplayMetadata},
     player::{Player, formatted_order_id},
@@ -84,10 +85,7 @@ impl W3GReplay {
             let prefix = parser.parse_prefix(bytes)?;
             self.handle_basic_replay_information(&prefix.metadata);
 
-            parser.parse_game_data_with(&prefix.metadata, |block| {
-                self.process_game_data_block(&block);
-                Ok(())
-            })?;
+            parser.parse_summary_game_data_with(&prefix.metadata, self)?;
 
             self.set_context(prefix.subheader, prefix.metadata);
             self.generate_id();
@@ -266,6 +264,40 @@ impl W3GReplay {
             _ => {
                 if let Some(current_player) = self.players.get_mut(&current_player_id) {
                     handle_action_for_player(action, current_player, self.total_time_tracker);
+                }
+            }
+        }
+    }
+
+    fn handle_summary_action_block(&mut self, action: &SummaryAction, current_player_id: u8) {
+        match action {
+            SummaryAction::TransferResources { slot, gold, lumber } => {
+                if let Some(player_id) = self.slot_to_player_id.get(slot).copied() {
+                    if player_id != 0 {
+                        let player_name = self
+                            .players
+                            .get(&player_id)
+                            .map(|player| player.name.clone())
+                            .unwrap_or_default();
+                        if let Some(current_player) = self.players.get_mut(&current_player_id) {
+                            current_player.handle_0x51(
+                                *slot,
+                                *gold,
+                                *lumber,
+                                player_id,
+                                player_name,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(current_player) = self.players.get_mut(&current_player_id) {
+                    handle_summary_action_for_player(
+                        action,
+                        current_player,
+                        self.total_time_tracker,
+                    );
                 }
             }
         }
@@ -469,6 +501,48 @@ impl W3GReplay {
             winning_team_id: self.winning_team_id,
             settings,
         })
+    }
+}
+
+impl GameDataSummaryVisitor for W3GReplay {
+    fn handle_time_increment(&mut self, time_increment: u16) -> Result<()> {
+        self.total_time_tracker += u32::from(time_increment);
+        self.time_segment_tracker += u32::from(time_increment);
+        if self.time_segment_tracker > self.player_action_track_interval {
+            for player in self.players.values_mut() {
+                player.new_action_tracking_segment(self.player_action_track_interval);
+            }
+            self.time_segment_tracker = 0;
+        }
+        Ok(())
+    }
+
+    fn begin_command_block(&mut self, player_id: u8) -> Result<bool> {
+        if !self.known_player_ids.contains(&player_id) {
+            return Ok(false);
+        }
+
+        if let Some(player) = self.players.get_mut(&player_id) {
+            player.current_time_played = self.total_time_tracker;
+            player.last_action_was_deselect = false;
+        }
+
+        Ok(true)
+    }
+
+    fn handle_summary_action(&mut self, player_id: u8, action: SummaryAction) -> Result<()> {
+        self.handle_summary_action_block(&action, player_id);
+        Ok(())
+    }
+
+    fn handle_chat_message(&mut self, chat: PlayerChatMessageBlock) -> Result<()> {
+        W3GReplay::handle_chat_message(self, &chat, self.total_time_tracker);
+        Ok(())
+    }
+
+    fn handle_leave_game(&mut self, leave: LeaveGameBlock) -> Result<()> {
+        self.leave_events.push(leave);
+        Ok(())
     }
 }
 
@@ -687,6 +761,59 @@ fn handle_action_for_player(action: &Action, current_player: &mut Player, total_
         | Action::ChooseHeroSkillSubmenu
         | Action::EnterBuildingSubmenu => current_player.handle_other(action),
         _ => {}
+    }
+}
+
+fn handle_summary_action_for_player(
+    action: &SummaryAction,
+    current_player: &mut Player,
+    total_time_tracker: u32,
+) {
+    match action {
+        SummaryAction::UnitBuildingAbilityNoParams { order_id } => {
+            let item_id = formatted_order_id(*order_id);
+            if matches!(&item_id, ItemId::StringEncoded(value) if value == "tert" || value == "tret")
+            {
+                current_player.handle_retraining(total_time_tracker);
+            }
+            current_player.handle_0x10(&item_id, total_time_tracker);
+        }
+        SummaryAction::UnitBuildingAbilityTargetPosition { order_id } => {
+            current_player.handle_0x11(&formatted_order_id(*order_id), total_time_tracker);
+        }
+        SummaryAction::UnitBuildingAbilityTargetPositionObject { order_id } => {
+            current_player.handle_0x12(&formatted_order_id(*order_id), total_time_tracker);
+        }
+        SummaryAction::GiveItemToUnit => current_player.handle_0x13(),
+        SummaryAction::UnitBuildingAbilityTwoTargetPositions { order_id1 } => {
+            current_player.handle_0x14(&formatted_order_id(*order_id1));
+        }
+        SummaryAction::ChangeSelection { select_mode } => {
+            if *select_mode == 0x02 {
+                current_player.last_action_was_deselect = true;
+                current_player.handle_0x16(true);
+            } else {
+                if !current_player.last_action_was_deselect {
+                    current_player.handle_0x16(true);
+                }
+                current_player.last_action_was_deselect = false;
+            }
+        }
+        SummaryAction::AssignGroupHotkey { group_number } => {
+            current_player.handle_assign_group_hotkey(*group_number);
+        }
+        SummaryAction::SelectGroupHotkey { group_number } => {
+            current_player.handle_select_group_hotkey(*group_number);
+        }
+        SummaryAction::SelectGroundItem
+        | SummaryAction::CancelHeroRevival
+        | SummaryAction::ChooseHeroSkillSubmenu
+        | SummaryAction::EnterBuildingSubmenu => current_player.handle_misc_apm_action(),
+        SummaryAction::RemoveUnitFromBuildingQueue => {
+            current_player.handle_remove_unit_from_building_queue();
+        }
+        SummaryAction::EscPressed => current_player.handle_esc_pressed(),
+        SummaryAction::TransferResources { .. } => {}
     }
 }
 

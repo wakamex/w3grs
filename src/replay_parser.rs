@@ -3,7 +3,7 @@
 use crate::{
     Result,
     action::Action,
-    game_data::{GameDataBlock, GameDataParser},
+    game_data::{GameDataBlock, GameDataParser, GameDataSummaryVisitor},
     metadata::{MetadataParser, ReplayMetadata},
     raw::{Header, RawParser, SubHeader},
 };
@@ -47,15 +47,15 @@ impl ReplayParser {
         })
     }
 
-    pub(crate) fn parse_game_data_with<F>(
+    pub(crate) fn parse_summary_game_data_with<V>(
         &self,
         metadata: &ReplayMetadata,
-        visitor: F,
+        visitor: &mut V,
     ) -> Result<()>
     where
-        F: FnMut(GameDataBlock) -> Result<()>,
+        V: GameDataSummaryVisitor,
     {
-        self.game_data_parser.parse_with(
+        self.game_data_parser.parse_summary_with(
             &metadata.game_data,
             metadata.is_post_202_replay_format,
             visitor,

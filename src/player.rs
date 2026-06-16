@@ -344,37 +344,57 @@ impl Player {
             });
     }
 
+    pub(crate) fn handle_assign_group_hotkey(&mut self, group_number: u8) {
+        self.actions.assigngroup += 1;
+        self.currently_tracked_apm += 1;
+        self.group_hotkeys
+            .entry((group_number + 1) % 10)
+            .or_default()
+            .assigned += 1;
+    }
+
+    pub(crate) fn handle_select_group_hotkey(&mut self, group_number: u8) {
+        self.actions.selecthotkey += 1;
+        self.currently_tracked_apm += 1;
+        self.group_hotkeys
+            .entry((group_number + 1) % 10)
+            .or_default()
+            .used += 1;
+    }
+
+    pub(crate) fn handle_misc_apm_action(&mut self) {
+        self.currently_tracked_apm += 1;
+    }
+
+    pub(crate) fn handle_remove_unit_from_building_queue(&mut self) {
+        self.actions.removeunit += 1;
+        self.currently_tracked_apm += 1;
+    }
+
+    pub(crate) fn handle_esc_pressed(&mut self) {
+        self.actions.esc += 1;
+        self.currently_tracked_apm += 1;
+    }
+
     pub fn handle_other(&mut self, action: &Action) {
         match action {
             Action::AssignGroupHotkey { group_number, .. } => {
-                self.actions.assigngroup += 1;
-                self.currently_tracked_apm += 1;
-                self.group_hotkeys
-                    .entry((group_number + 1) % 10)
-                    .or_default()
-                    .assigned += 1;
+                self.handle_assign_group_hotkey(*group_number);
             }
             Action::SelectGroupHotkey { group_number } => {
-                self.actions.selecthotkey += 1;
-                self.currently_tracked_apm += 1;
-                self.group_hotkeys
-                    .entry((group_number + 1) % 10)
-                    .or_default()
-                    .used += 1;
+                self.handle_select_group_hotkey(*group_number);
             }
             Action::SelectGroundItem { .. }
             | Action::CancelHeroRevival { .. }
             | Action::ChooseHeroSkillSubmenu
             | Action::EnterBuildingSubmenu => {
-                self.currently_tracked_apm += 1;
+                self.handle_misc_apm_action();
             }
             Action::RemoveUnitFromBuildingQueue { .. } => {
-                self.actions.removeunit += 1;
-                self.currently_tracked_apm += 1;
+                self.handle_remove_unit_from_building_queue();
             }
             Action::EscPressed => {
-                self.actions.esc += 1;
-                self.currently_tracked_apm += 1;
+                self.handle_esc_pressed();
             }
             _ => {}
         }

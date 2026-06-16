@@ -225,6 +225,25 @@ impl Action {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SummaryAction {
+    UnitBuildingAbilityNoParams { order_id: FourCC },
+    UnitBuildingAbilityTargetPosition { order_id: FourCC },
+    UnitBuildingAbilityTargetPositionObject { order_id: FourCC },
+    GiveItemToUnit,
+    UnitBuildingAbilityTwoTargetPositions { order_id1: FourCC },
+    ChangeSelection { select_mode: u8 },
+    AssignGroupHotkey { group_number: u8 },
+    SelectGroupHotkey { group_number: u8 },
+    SelectGroundItem,
+    CancelHeroRevival,
+    RemoveUnitFromBuildingQueue,
+    TransferResources { slot: u8, gold: u32, lumber: u32 },
+    EscPressed,
+    ChooseHeroSkillSubmenu,
+    EnterBuildingSubmenu,
+}
+
 impl Serialize for Action {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -555,16 +574,139 @@ impl ActionParser {
         Ok(actions)
     }
 
+    pub(crate) fn parse_summary_with<F>(
+        &mut self,
+        input: &[u8],
+        is_post_202_replay_format: bool,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        F: FnMut(SummaryAction) -> Result<()>,
+    {
+        let mut parser = StatefulBufferParser::new(input);
+
+        while !parser.is_done() {
+            let action_id = parser.read_u8()?;
+            match self.parse_summary_action(&mut parser, action_id, is_post_202_replay_format) {
+                Ok(Some(action)) => visitor(action)?,
+                Ok(None) => {}
+                Err(Error::UnexpectedEof { .. }) => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(())
+    }
+
     fn parse_action(
         &mut self,
         parser: &mut StatefulBufferParser<'_>,
-        mut action_id: u8,
+        action_id: u8,
         is_post_202_replay_format: bool,
     ) -> Result<Option<Action>> {
-        if is_post_202_replay_format && action_id > 0x77 {
-            action_id = action_id.saturating_add(1);
-        }
+        let action_id = normalize_action_id(action_id, is_post_202_replay_format);
+        let result = self.parse_action_fields(parser, action_id)?;
+        self.old_action_id = action_id;
+        Ok(result)
+    }
 
+    fn parse_summary_action(
+        &mut self,
+        parser: &mut StatefulBufferParser<'_>,
+        action_id: u8,
+        is_post_202_replay_format: bool,
+    ) -> Result<Option<SummaryAction>> {
+        let action_id = normalize_action_id(action_id, is_post_202_replay_format);
+        let result = match action_id {
+            0x10 => {
+                parser.skip(2)?;
+                let order_id = read_fourcc(parser)?;
+                parser.skip(8)?;
+                Some(SummaryAction::UnitBuildingAbilityNoParams { order_id })
+            }
+            0x11 => {
+                parser.skip(2)?;
+                let order_id = read_fourcc(parser)?;
+                parser.skip(16)?;
+                Some(SummaryAction::UnitBuildingAbilityTargetPosition { order_id })
+            }
+            0x12 => {
+                parser.skip(2)?;
+                let order_id = read_fourcc(parser)?;
+                parser.skip(24)?;
+                Some(SummaryAction::UnitBuildingAbilityTargetPositionObject { order_id })
+            }
+            0x13 => {
+                parser.skip(38)?;
+                Some(SummaryAction::GiveItemToUnit)
+            }
+            0x14 => {
+                parser.skip(2)?;
+                let order_id1 = read_fourcc(parser)?;
+                parser.skip(37)?;
+                Some(SummaryAction::UnitBuildingAbilityTwoTargetPositions { order_id1 })
+            }
+            0x15 => {
+                parser.skip(51)?;
+                None
+            }
+            0x16 => {
+                let select_mode = parser.read_u8()?;
+                let number_units = parser.read_u16_le()?;
+                skip_selection_units(parser, number_units)?;
+                Some(SummaryAction::ChangeSelection { select_mode })
+            }
+            0x17 => {
+                let group_number = parser.read_u8()?;
+                let number_units = parser.read_u16_le()?;
+                skip_selection_units(parser, number_units)?;
+                Some(SummaryAction::AssignGroupHotkey { group_number })
+            }
+            0x18 => {
+                let group_number = parser.read_u8()?;
+                parser.skip(1)?;
+                Some(SummaryAction::SelectGroupHotkey { group_number })
+            }
+            0x1c => {
+                parser.skip(9)?;
+                Some(SummaryAction::SelectGroundItem)
+            }
+            0x1d => {
+                parser.skip(8)?;
+                Some(SummaryAction::CancelHeroRevival)
+            }
+            0x1e | 0x1f => {
+                parser.skip(5)?;
+                Some(SummaryAction::RemoveUnitFromBuildingQueue)
+            }
+            0x51 => {
+                let slot = parser.read_u8()?;
+                let gold = parser.read_u32_le()?;
+                let lumber = parser.read_u32_le()?;
+                Some(SummaryAction::TransferResources { slot, gold, lumber })
+            }
+            0x61 => Some(SummaryAction::EscPressed),
+            0x65 => {
+                parser.skip(8)?;
+                None
+            }
+            0x66 => Some(SummaryAction::ChooseHeroSkillSubmenu),
+            0x67 => Some(SummaryAction::EnterBuildingSubmenu),
+            _ => {
+                let _ = self.parse_action_fields(parser, action_id)?;
+                None
+            }
+        };
+
+        self.old_action_id = action_id;
+        Ok(result)
+    }
+
+    fn parse_action_fields(
+        &mut self,
+        parser: &mut StatefulBufferParser<'_>,
+        action_id: u8,
+    ) -> Result<Option<Action>> {
         let result = match action_id {
             0x01 => {
                 parser.skip(1)?;
@@ -885,8 +1027,15 @@ impl ActionParser {
             _ => None,
         };
 
-        self.old_action_id = action_id;
         Ok(result)
+    }
+}
+
+fn normalize_action_id(action_id: u8, is_post_202_replay_format: bool) -> u8 {
+    if is_post_202_replay_format && action_id > 0x77 {
+        action_id.saturating_add(1)
+    } else {
+        action_id
     }
 }
 
@@ -896,6 +1045,10 @@ fn read_selection_units(parser: &mut StatefulBufferParser<'_>, length: u16) -> R
         units.push(read_net_tag(parser)?);
     }
     Ok(units)
+}
+
+fn skip_selection_units(parser: &mut StatefulBufferParser<'_>, length: u16) -> Result<()> {
+    parser.skip(isize::try_from(usize::from(length) * 8).expect("u16 * 8 fits in isize"))
 }
 
 fn read_fourcc(parser: &mut StatefulBufferParser<'_>) -> Result<FourCC> {

@@ -1,7 +1,7 @@
 //! Game data block parser port.
 
 use crate::{
-    action::{Action, ActionParser},
+    action::{Action, ActionParser, SummaryAction},
     buffer::StatefulBufferParser,
     error::{Error, Result},
 };
@@ -88,6 +88,14 @@ pub struct PlayerChatMessageBlock {
     pub message: String,
 }
 
+pub(crate) trait GameDataSummaryVisitor {
+    fn handle_time_increment(&mut self, time_increment: u16) -> Result<()>;
+    fn begin_command_block(&mut self, player_id: u8) -> Result<bool>;
+    fn handle_summary_action(&mut self, player_id: u8, action: SummaryAction) -> Result<()>;
+    fn handle_chat_message(&mut self, chat: PlayerChatMessageBlock) -> Result<()>;
+    fn handle_leave_game(&mut self, leave: LeaveGameBlock) -> Result<()>;
+}
+
 #[derive(Debug, Default)]
 pub struct GameDataParser;
 
@@ -131,6 +139,24 @@ impl GameDataParser {
 
         Ok(())
     }
+
+    pub(crate) fn parse_summary_with<V>(
+        &self,
+        data: &[u8],
+        is_post_202_replay_format: bool,
+        visitor: &mut V,
+    ) -> Result<()>
+    where
+        V: GameDataSummaryVisitor,
+    {
+        let mut parser = StatefulBufferParser::new(data);
+
+        while !parser.is_done() {
+            parse_summary_block(&mut parser, is_post_202_replay_format, visitor)?;
+        }
+
+        Ok(())
+    }
 }
 
 fn parse_block(
@@ -166,6 +192,28 @@ fn parse_block(
         _ => None,
     };
     Ok(block)
+}
+
+fn parse_summary_block<V>(
+    parser: &mut StatefulBufferParser<'_>,
+    is_post_202_replay_format: bool,
+    visitor: &mut V,
+) -> Result<()>
+where
+    V: GameDataSummaryVisitor,
+{
+    let id = parser.read_u8()?;
+    match id {
+        0x17 => visitor.handle_leave_game(parse_leave_game_block(parser)?)?,
+        0x1a..=0x1c => parser.skip(4)?,
+        0x1f | 0x1e => parse_timeslot_summary(parser, is_post_202_replay_format, visitor)?,
+        0x20 => visitor.handle_chat_message(parse_chat_message(parser)?)?,
+        0x22 => parse_unknown_0x22(parser)?,
+        0x23 => parser.skip(10)?,
+        0x2f => parser.skip(8)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 fn parse_unknown_0x22(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
@@ -237,6 +285,49 @@ fn parse_timeslot_block(
         time_increment,
         command_blocks,
     })
+}
+
+fn parse_timeslot_summary<V>(
+    parser: &mut StatefulBufferParser<'_>,
+    is_post_202_replay_format: bool,
+    visitor: &mut V,
+) -> Result<()>
+where
+    V: GameDataSummaryVisitor,
+{
+    let byte_count = parser.read_u16_le()? as usize;
+    let time_increment = parser.read_u16_le()?;
+    let action_block_last_offset = parser
+        .offset()
+        .checked_add(
+            byte_count
+                .checked_sub(2)
+                .ok_or_else(|| Error::Message("timeslot block byte count underflow".to_string()))?,
+        )
+        .ok_or_else(|| Error::Message("timeslot block offset overflow".to_string()))?;
+    let mut action_parser = ActionParser::new();
+
+    visitor.handle_time_increment(time_increment)?;
+
+    while parser.offset() < action_block_last_offset {
+        let player_id = parser.read_u8()?;
+        let action_block_length = parser.read_u16_le()? as usize;
+        let action_start = parser.offset();
+        let action_end = action_start
+            .saturating_add(action_block_length)
+            .min(parser.buffer().len());
+
+        if visitor.begin_command_block(player_id)? {
+            let actions = &parser.buffer()[action_start..action_end];
+            action_parser.parse_summary_with(actions, is_post_202_replay_format, |action| {
+                visitor.handle_summary_action(player_id, action)
+            })?;
+        }
+
+        parser.set_offset(action_start.saturating_add(action_block_length));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
