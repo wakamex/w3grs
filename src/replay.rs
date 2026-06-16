@@ -40,8 +40,8 @@ pub struct W3GReplay {
     player_action_track_interval: u32,
     game_type: String,
     matchup: String,
-    slot_to_player_id: HashMap<u8, u8>,
-    known_player_ids: HashSet<u8>,
+    slot_to_player_id: [u8; 256],
+    known_player_ids: [bool; 256],
     winning_team_id: i16,
     is_parsing: bool,
 }
@@ -144,8 +144,8 @@ impl W3GReplay {
         self.player_action_track_interval = 60000;
         self.game_type.clear();
         self.matchup.clear();
-        self.slot_to_player_id.clear();
-        self.known_player_ids.clear();
+        self.slot_to_player_id = [0; 256];
+        self.known_player_ids = [false; 256];
         self.winning_team_id = -1;
     }
 
@@ -178,7 +178,9 @@ impl W3GReplay {
 
         for (index, slot) in metadata.slot_records.iter().enumerate() {
             if slot.slot_status > 1 {
-                self.slot_to_player_id.insert(index as u8, slot.player_id);
+                if let Some(player_id) = self.slot_to_player_id.get_mut(index) {
+                    *player_id = slot.player_id;
+                }
 
                 let name = temp_players
                     .get(&slot.player_id)
@@ -197,7 +199,10 @@ impl W3GReplay {
             }
         }
 
-        self.known_player_ids = self.players.keys().copied().collect();
+        self.known_player_ids = [false; 256];
+        for player_id in self.players.keys().copied() {
+            self.known_player_ids[usize::from(player_id)] = true;
+        }
     }
 
     fn process_game_data_block(&mut self, block: &GameDataBlock) {
@@ -227,7 +232,7 @@ impl W3GReplay {
     }
 
     fn process_command_data_block(&mut self, block: &CommandBlock) {
-        if !self.known_player_ids.contains(&block.player_id) {
+        if !self.known_player_ids[usize::from(block.player_id)] {
             return;
         }
 
@@ -244,22 +249,15 @@ impl W3GReplay {
     fn handle_action_block(&mut self, action: &Action, current_player_id: u8) {
         match action {
             Action::TransferResources { slot, gold, lumber } => {
-                if let Some(player_id) = self.slot_to_player_id.get(slot).copied() {
-                    if player_id != 0 {
-                        let player_name = self
-                            .players
-                            .get(&player_id)
-                            .map(|player| player.name.clone())
-                            .unwrap_or_default();
-                        if let Some(current_player) = self.players.get_mut(&current_player_id) {
-                            current_player.handle_0x51(
-                                *slot,
-                                *gold,
-                                *lumber,
-                                player_id,
-                                player_name,
-                            );
-                        }
+                let player_id = self.slot_to_player_id[usize::from(*slot)];
+                if player_id != 0 {
+                    let player_name = self
+                        .players
+                        .get(&player_id)
+                        .map(|player| player.name.clone())
+                        .unwrap_or_default();
+                    if let Some(current_player) = self.players.get_mut(&current_player_id) {
+                        current_player.handle_0x51(*slot, *gold, *lumber, player_id, player_name);
                     }
                 }
             }
@@ -275,22 +273,15 @@ impl W3GReplay {
     fn handle_summary_action_block(&mut self, action: &SummaryAction, current_player_id: u8) {
         match action {
             SummaryAction::TransferResources { slot, gold, lumber } => {
-                if let Some(player_id) = self.slot_to_player_id.get(slot).copied() {
-                    if player_id != 0 {
-                        let player_name = self
-                            .players
-                            .get(&player_id)
-                            .map(|player| player.name.clone())
-                            .unwrap_or_default();
-                        if let Some(current_player) = self.players.get_mut(&current_player_id) {
-                            current_player.handle_0x51(
-                                *slot,
-                                *gold,
-                                *lumber,
-                                player_id,
-                                player_name,
-                            );
-                        }
+                let player_id = self.slot_to_player_id[usize::from(*slot)];
+                if player_id != 0 {
+                    let player_name = self
+                        .players
+                        .get(&player_id)
+                        .map(|player| player.name.clone())
+                        .unwrap_or_default();
+                    if let Some(current_player) = self.players.get_mut(&current_player_id) {
+                        current_player.handle_0x51(*slot, *gold, *lumber, player_id, player_name);
                     }
                 }
             }
@@ -521,7 +512,7 @@ impl GameDataSummaryVisitor for W3GReplay {
     }
 
     fn begin_command_block(&mut self, player_id: u8) -> Result<bool> {
-        if !self.known_player_ids.contains(&player_id) {
+        if !self.known_player_ids[usize::from(player_id)] {
             return Ok(false);
         }
 
@@ -582,8 +573,8 @@ impl Default for W3GReplay {
             player_action_track_interval: 60000,
             game_type: String::new(),
             matchup: String::new(),
-            slot_to_player_id: HashMap::new(),
-            known_player_ids: HashSet::new(),
+            slot_to_player_id: [0; 256],
+            known_player_ids: [false; 256],
             winning_team_id: -1,
             is_parsing: false,
         }
