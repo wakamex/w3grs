@@ -5,7 +5,7 @@ use crate::{
     action::Action,
     game_data::{GameDataBlock, GameDataParser, GameDataSummaryVisitor},
     metadata::{MetadataParser, ReplayMetadata},
-    raw::{Header, RawParser, SubHeader},
+    raw::{Header, RawParser, SubHeader, get_uncompressed_data},
 };
 use serde::{Deserialize, Serialize};
 
@@ -47,19 +47,33 @@ impl ReplayParser {
         })
     }
 
-    pub(crate) fn parse_summary_game_data_with<V>(
+    pub(crate) fn parse_summary_prefix(&self, input: &[u8]) -> Result<ReplayParserSummaryPrefix> {
+        let raw = self.raw_parser.parse(input)?;
+        let decompressed_data = get_uncompressed_data(&raw.blocks)?;
+        let metadata_parts = self
+            .metadata_parser
+            .parse_data_without_game_data(&decompressed_data)?;
+
+        Ok(ReplayParserSummaryPrefix {
+            header: raw.header,
+            subheader: raw.subheader,
+            metadata: metadata_parts.metadata,
+            decompressed_data,
+            game_data_offset: metadata_parts.game_data_offset,
+        })
+    }
+
+    pub(crate) fn parse_summary_game_data_slice_with<V>(
         &self,
-        metadata: &ReplayMetadata,
+        game_data: &[u8],
+        is_post_202_replay_format: bool,
         visitor: &mut V,
     ) -> Result<()>
     where
         V: GameDataSummaryVisitor,
     {
-        self.game_data_parser.parse_summary_with(
-            &metadata.game_data,
-            metadata.is_post_202_replay_format,
-            visitor,
-        )
+        self.game_data_parser
+            .parse_summary_with(game_data, is_post_202_replay_format, visitor)
     }
 }
 
@@ -77,6 +91,15 @@ pub(crate) struct ReplayParserPrefix {
     pub header: Header,
     pub subheader: SubHeader,
     pub metadata: ReplayMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReplayParserSummaryPrefix {
+    pub header: Header,
+    pub subheader: SubHeader,
+    pub metadata: ReplayMetadata,
+    pub decompressed_data: Vec<u8>,
+    pub game_data_offset: usize,
 }
 
 impl ReplayParserOutput {

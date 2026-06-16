@@ -82,10 +82,14 @@ impl W3GReplay {
         let result = (|| {
             self.reset_state();
             let parser = ReplayParser::new();
-            let prefix = parser.parse_prefix(bytes)?;
+            let prefix = parser.parse_summary_prefix(bytes)?;
             self.handle_basic_replay_information(&prefix.metadata);
 
-            parser.parse_summary_game_data_with(&prefix.metadata, self)?;
+            parser.parse_summary_game_data_slice_with(
+                &prefix.decompressed_data[prefix.game_data_offset..],
+                prefix.metadata.is_post_202_replay_format,
+                self,
+            )?;
 
             self.set_context(prefix.subheader, prefix.metadata);
             self.generate_id();

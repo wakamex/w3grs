@@ -99,6 +99,18 @@ impl MetadataParser {
     }
 
     pub fn parse_data(&self, data: &[u8]) -> Result<ReplayMetadata> {
+        Ok(self.parse_data_parts(data, true)?.metadata)
+    }
+
+    pub(crate) fn parse_data_without_game_data(&self, data: &[u8]) -> Result<ReplayMetadataParts> {
+        self.parse_data_parts(data, false)
+    }
+
+    fn parse_data_parts(
+        &self,
+        data: &[u8],
+        include_game_data: bool,
+    ) -> Result<ReplayMetadataParts> {
         let mut parser = StatefulBufferParser::new(data);
         let mut is_post_202_replay_format = false;
 
@@ -137,24 +149,38 @@ impl MetadataParser {
         let random_seed = parser.read_u32_le()?;
         let select_mode = parser.read_hex_string(1)?;
         let start_spot_count = parser.read_u8()?;
-        let game_data = parser.buffer()[parser.offset()..].to_vec();
+        let game_data_offset = parser.offset();
+        let game_data = if include_game_data {
+            parser.buffer()[game_data_offset..].to_vec()
+        } else {
+            Vec::new()
+        };
 
-        Ok(ReplayMetadata {
-            game_data,
-            map,
-            player_count,
-            game_type,
-            locale_hash,
-            player_records,
-            slot_records,
-            reforged_player_metadata,
-            random_seed,
-            select_mode,
-            game_name,
-            start_spot_count,
-            is_post_202_replay_format,
+        Ok(ReplayMetadataParts {
+            metadata: ReplayMetadata {
+                game_data,
+                map,
+                player_count,
+                game_type,
+                locale_hash,
+                player_records,
+                slot_records,
+                reforged_player_metadata,
+                random_seed,
+                select_mode,
+                game_name,
+                start_spot_count,
+                is_post_202_replay_format,
+            },
+            game_data_offset,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReplayMetadataParts {
+    pub metadata: ReplayMetadata,
+    pub game_data_offset: usize,
 }
 
 fn parse_slot_records(parser: &mut StatefulBufferParser<'_>, count: u8) -> Result<Vec<SlotRecord>> {
