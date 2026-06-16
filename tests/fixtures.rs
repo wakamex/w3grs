@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+#[cfg(feature = "extended-actions")]
+use w3grs::action::Action;
 use w3grs::{ReplayParser, W3GReplay, game_data::GameDataBlock, replay::ObserverMode};
 
 fn replay_fixtures() -> Vec<PathBuf> {
@@ -157,4 +159,76 @@ fn serializes_low_level_output_with_w3gjs_event_shapes() {
     let action_json = serde_json::to_value(action).unwrap();
     assert!(action_json.get("id").and_then(Value::as_u64).is_some());
     assert!(!action_json.as_object().unwrap().is_empty());
+}
+
+#[test]
+#[cfg(feature = "extended-actions")]
+fn extended_actions_surface_command_card_source_in_timed_stream() {
+    let Some(fixture) = upstream_replay_path("132/reforged2010.w3g") else {
+        return;
+    };
+    let bytes = std::fs::read(fixture).unwrap();
+    let output = ReplayParser::new().parse(&bytes).unwrap();
+
+    let timed = output
+        .iter_timed_actions()
+        .find(|timed| matches!(timed.action, Action::CommandCardSource { .. }))
+        .expect("expected a command-card source action in timed stream");
+
+    let Action::CommandCardSource {
+        source_unit_tag,
+        ability_id,
+        order_id,
+        raw_opcode,
+        normalized_opcode,
+    } = timed.action
+    else {
+        panic!("expected command-card source action");
+    };
+
+    assert_eq!(*normalized_opcode, 0x7b);
+    assert!(matches!(*raw_opcode, 0x7a | 0x7b));
+    assert_ne!(*source_unit_tag, [0, 0]);
+    assert_ne!(*ability_id, [0, 0, 0, 0]);
+    assert_ne!(*order_id, [0, 0, 0, 0]);
+    assert_eq!(timed.block_id, 0x1f);
+    assert!(timed.sequence > 0);
+}
+
+#[test]
+#[cfg(feature = "extended-actions")]
+fn extended_actions_surface_opaque_dropped_actions_in_timed_stream() {
+    let Some(fixture) = upstream_replay_path("131/action0x7a.w3g") else {
+        return;
+    };
+    let bytes = std::fs::read(fixture).unwrap();
+    let output = ReplayParser::new().parse(&bytes).unwrap();
+
+    let timed = output
+        .iter_timed_actions()
+        .find(|timed| {
+            matches!(
+                timed.action,
+                Action::OpaqueDroppedAction {
+                    normalized_opcode: 0x7a,
+                    payload,
+                    ..
+                } if payload.len() == 20
+            )
+        })
+        .expect("expected an opaque dropped 0x7a action in timed stream");
+
+    let Action::OpaqueDroppedAction {
+        raw_opcode,
+        normalized_opcode,
+        payload,
+    } = timed.action
+    else {
+        panic!("expected opaque dropped action");
+    };
+
+    assert_eq!(*normalized_opcode, 0x7a);
+    assert!(matches!(*raw_opcode, 0x79 | 0x7a));
+    assert_eq!(payload.len(), 20);
+    assert!(timed.sequence > 0);
 }

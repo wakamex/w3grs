@@ -180,6 +180,20 @@ pub enum Action {
         val: f32,
         text: String,
     },
+    #[cfg(feature = "extended-actions")]
+    CommandCardSource {
+        source_unit_tag: NetTag,
+        ability_id: FourCC,
+        order_id: FourCC,
+        raw_opcode: u8,
+        normalized_opcode: u8,
+    },
+    #[cfg(feature = "extended-actions")]
+    OpaqueDroppedAction {
+        raw_opcode: u8,
+        normalized_opcode: u8,
+        payload: Vec<u8>,
+    },
 }
 
 impl Action {
@@ -221,6 +235,14 @@ impl Action {
             Action::W3Api { .. } => 0x77,
             Action::BlzSync { .. } => 0x78,
             Action::CommandFrame { .. } => 0x79,
+            #[cfg(feature = "extended-actions")]
+            Action::CommandCardSource {
+                normalized_opcode, ..
+            } => *normalized_opcode,
+            #[cfg(feature = "extended-actions")]
+            Action::OpaqueDroppedAction {
+                normalized_opcode, ..
+            } => *normalized_opcode,
         }
     }
 }
@@ -462,6 +484,30 @@ impl Serialize for Action {
                 map.serialize_entry("val", val)?;
                 map.serialize_entry("text", text)?;
             }
+            #[cfg(feature = "extended-actions")]
+            Action::CommandCardSource {
+                source_unit_tag,
+                ability_id,
+                order_id,
+                raw_opcode,
+                normalized_opcode,
+            } => {
+                map.serialize_entry("sourceUnitTag", source_unit_tag)?;
+                map.serialize_entry("abilityId", ability_id)?;
+                map.serialize_entry("orderId", order_id)?;
+                map.serialize_entry("rawOpcode", raw_opcode)?;
+                map.serialize_entry("normalizedOpcode", normalized_opcode)?;
+            }
+            #[cfg(feature = "extended-actions")]
+            Action::OpaqueDroppedAction {
+                raw_opcode,
+                normalized_opcode,
+                payload,
+            } => {
+                map.serialize_entry("rawOpcode", raw_opcode)?;
+                map.serialize_entry("normalizedOpcode", normalized_opcode)?;
+                map.serialize_entry("payload", payload)?;
+            }
         }
 
         map.end()
@@ -495,6 +541,65 @@ struct TwoTargetActionFields<'a> {
     category: &'a u32,
     owner: &'a u8,
     target_b: &'a Vec2,
+}
+
+#[cfg(feature = "extended-actions")]
+fn opaque_dropped_action(raw_opcode: u8, normalized_opcode: u8, payload: Vec<u8>) -> Action {
+    Action::OpaqueDroppedAction {
+        raw_opcode,
+        normalized_opcode,
+        payload,
+    }
+}
+
+fn parse_fixed_opaque_or_skip(
+    parser: &mut StatefulBufferParser<'_>,
+    raw_opcode: u8,
+    normalized_opcode: u8,
+    payload_len: usize,
+) -> Result<Option<Action>> {
+    #[cfg(feature = "extended-actions")]
+    {
+        let payload = parser.read_bytes(payload_len)?.to_vec();
+        Ok(Some(opaque_dropped_action(
+            raw_opcode,
+            normalized_opcode,
+            payload,
+        )))
+    }
+    #[cfg(not(feature = "extended-actions"))]
+    {
+        let _ = (raw_opcode, normalized_opcode);
+        parser.skip(payload_len as isize)?;
+        Ok(None)
+    }
+}
+
+fn parse_zero_term_opaque_or_skip(
+    parser: &mut StatefulBufferParser<'_>,
+    raw_opcode: u8,
+    normalized_opcode: u8,
+    prefix_len: usize,
+) -> Result<Option<Action>> {
+    #[cfg(feature = "extended-actions")]
+    {
+        let start = parser.offset();
+        parser.skip(prefix_len as isize)?;
+        let _ = parser.read_zero_term_string()?;
+        let payload = parser.buffer()[start..parser.offset()].to_vec();
+        Ok(Some(opaque_dropped_action(
+            raw_opcode,
+            normalized_opcode,
+            payload,
+        )))
+    }
+    #[cfg(not(feature = "extended-actions"))]
+    {
+        let _ = (raw_opcode, normalized_opcode);
+        parser.skip(prefix_len as isize)?;
+        let _ = parser.read_zero_term_string()?;
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -647,9 +752,10 @@ impl ActionParser {
         action_id: u8,
         is_post_202_replay_format: bool,
     ) -> Result<Option<Action>> {
-        let action_id = normalize_action_id(action_id, is_post_202_replay_format);
-        let result = self.parse_action_fields(parser, action_id)?;
-        self.old_action_id = action_id;
+        let raw_action_id = action_id;
+        let normalized_action_id = normalize_action_id(action_id, is_post_202_replay_format);
+        let result = self.parse_action_fields(parser, raw_action_id, normalized_action_id)?;
+        self.old_action_id = normalized_action_id;
         Ok(result)
     }
 
@@ -901,14 +1007,27 @@ impl ActionParser {
     fn parse_action_fields(
         &mut self,
         parser: &mut StatefulBufferParser<'_>,
+        raw_action_id: u8,
         action_id: u8,
     ) -> Result<Option<Action>> {
+        #[cfg(not(feature = "extended-actions"))]
+        let _ = raw_action_id;
+
         let result = match action_id {
             0x01 => {
                 parser.skip(1)?;
                 None
             }
-            0x02 => None,
+            0x02 => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    Some(opaque_dropped_action(raw_action_id, action_id, Vec::new()))
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    None
+                }
+            }
             0x03 => Some(Action::SetGameSpeed {
                 game_speed: parser.read_u8()?,
             }),
@@ -1089,27 +1208,16 @@ impl ActionParser {
                 None
             }
             0x2f => None,
-            0x50 => {
-                let _slot_number = parser.read_u8()?;
-                let _flags = parser.read_u32_le()?;
-                None
-            }
+            0x50 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 5)?,
             0x51 => {
                 let slot = parser.read_u8()?;
                 let gold = parser.read_u32_le()?;
                 let lumber = parser.read_u32_le()?;
                 Some(Action::TransferResources { slot, gold, lumber })
             }
-            0x60 => {
-                parser.skip(8)?;
-                let _ = parser.read_zero_term_string()?;
-                None
-            }
+            0x60 => parse_zero_term_opaque_or_skip(parser, raw_action_id, action_id, 8)?,
             0x61 => Some(Action::EscPressed),
-            0x62 => {
-                parser.skip(12)?;
-                None
-            }
+            0x62 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 12)?,
             0x63 => {
                 parser.skip(8)?;
                 None
@@ -1127,10 +1235,7 @@ impl ActionParser {
                 let duration = parser.read_f32_le()?;
                 Some(Action::AllyPing { pos, duration })
             }
-            0x69 | 0x6a => {
-                parser.skip(16)?;
-                None
-            }
+            0x69 | 0x6a => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 16)?,
             0x6b => {
                 let cache = read_cache_desc(parser)?;
                 let value = parser.read_u32_le()?;
@@ -1204,13 +1309,26 @@ impl ActionParser {
                     text,
                 })
             }
-            0x7a => {
-                parser.skip(20)?;
-                None
-            }
+            0x7a => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 20)?,
             0x7b => {
-                parser.skip(16)?;
-                None
+                #[cfg(feature = "extended-actions")]
+                {
+                    let source_unit_tag = read_net_tag(parser)?;
+                    let ability_id = read_fourcc(parser)?;
+                    let order_id = read_fourcc(parser)?;
+                    Some(Action::CommandCardSource {
+                        source_unit_tag,
+                        ability_id,
+                        order_id,
+                        raw_opcode: raw_action_id,
+                        normalized_opcode: action_id,
+                    })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(16)?;
+                    None
+                }
             }
             0xa0 => {
                 parser.skip(14)?;
@@ -1520,5 +1638,136 @@ mod tests {
         assert_eq!(format_net_tag([1, 2]), "n:1:2");
         assert_eq!(format_optional_net_tag([1, 2]), Some("n:1:2".to_string()));
         assert_eq!(format_optional_net_tag([u32::MAX, u32::MAX]), None);
+    }
+
+    #[test]
+    #[cfg(not(feature = "extended-actions"))]
+    fn drops_post_202_command_card_source_by_default() {
+        let input = [
+            0x7a, 0x73, 0x55, 0x00, 0x00, 0x73, 0x55, 0x00, 0x00, 0x75, 0x62, 0x4f, 0x41, 0x74,
+            0x6c, 0x61, 0x6f,
+        ];
+
+        let actions = ActionParser::new().parse(&input, true).unwrap();
+
+        assert!(actions.is_empty());
+    }
+
+    #[cfg(feature = "extended-actions")]
+    fn assert_opaque_action(
+        action: &Action,
+        raw_opcode: u8,
+        normalized_opcode: u8,
+        payload: &[u8],
+    ) {
+        let Action::OpaqueDroppedAction {
+            raw_opcode: actual_raw_opcode,
+            normalized_opcode: actual_normalized_opcode,
+            payload: actual_payload,
+        } = action
+        else {
+            panic!("expected opaque dropped action");
+        };
+
+        assert_eq!(*actual_raw_opcode, raw_opcode);
+        assert_eq!(*actual_normalized_opcode, normalized_opcode);
+        assert_eq!(actual_payload.as_slice(), payload);
+        assert_eq!(action.id(), normalized_opcode);
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_opaque_dropped_actions_when_extended_actions_are_enabled() {
+        let mut input = Vec::new();
+        input.push(0x02);
+        input.extend([0x50, 1, 2, 3, 4, 5]);
+        input.extend([0x60, 10, 11, 12, 13, 14, 15, 16, 17, b'h', b'i', 0]);
+        let payload_62: Vec<_> = (20u8..=31).collect();
+        let payload_69: Vec<_> = (40u8..=55).collect();
+        let payload_6a: Vec<_> = (60u8..=75).collect();
+        let payload_7a: Vec<_> = (80u8..=99).collect();
+        input.push(0x62);
+        input.extend_from_slice(&payload_62);
+        input.push(0x69);
+        input.extend_from_slice(&payload_69);
+        input.push(0x6a);
+        input.extend_from_slice(&payload_6a);
+        input.push(0x7a);
+        input.extend_from_slice(&payload_7a);
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert_eq!(actions.len(), 7);
+        assert_opaque_action(&actions[0], 0x02, 0x02, &[]);
+        assert_opaque_action(&actions[1], 0x50, 0x50, &[1, 2, 3, 4, 5]);
+        assert_opaque_action(
+            &actions[2],
+            0x60,
+            0x60,
+            &[10, 11, 12, 13, 14, 15, 16, 17, b'h', b'i', 0],
+        );
+        assert_opaque_action(&actions[3], 0x62, 0x62, &payload_62);
+        assert_opaque_action(&actions[4], 0x69, 0x69, &payload_69);
+        assert_opaque_action(&actions[5], 0x6a, 0x6a, &payload_6a);
+        assert_opaque_action(&actions[6], 0x7a, 0x7a, &payload_7a);
+
+        let json = serde_json::to_value(&actions[1]).unwrap();
+        assert_eq!(json["id"], 0x50);
+        assert_eq!(json["rawOpcode"], 0x50);
+        assert_eq!(json["normalizedOpcode"], 0x50);
+        assert_eq!(json["payload"], serde_json::json!([1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn exposes_post_202_raw_0x79_as_opaque_normalized_0x7a() {
+        let mut input = vec![0x79];
+        let payload: Vec<_> = (1u8..=20).collect();
+        input.extend_from_slice(&payload);
+
+        let actions = ActionParser::new().parse(&input, true).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert_opaque_action(&actions[0], 0x79, 0x7a, &payload);
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_command_card_source_when_extended_actions_are_enabled() {
+        let input = [
+            0x7a, 0x73, 0x55, 0x00, 0x00, 0x73, 0x55, 0x00, 0x00, 0x75, 0x62, 0x4f, 0x41, 0x74,
+            0x6c, 0x61, 0x6f,
+        ];
+
+        let actions = ActionParser::new().parse(&input, true).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        let Action::CommandCardSource {
+            source_unit_tag,
+            ability_id,
+            order_id,
+            raw_opcode,
+            normalized_opcode,
+        } = &actions[0]
+        else {
+            panic!("expected command card source action");
+        };
+        assert_eq!(*source_unit_tag, [21875, 21875]);
+        assert_eq!(format_net_tag(*source_unit_tag), "n:21875:21875");
+        assert_eq!(*ability_id, *b"ubOA");
+        assert_eq!(format_fourcc_or_hex(*ability_id), "AObu");
+        assert_eq!(*order_id, *b"tlao");
+        assert_eq!(format_fourcc_or_hex(*order_id), "oalt");
+        assert_eq!(*raw_opcode, 0x7a);
+        assert_eq!(*normalized_opcode, 0x7b);
+        assert_eq!(actions[0].id(), 0x7b);
+
+        let json = serde_json::to_value(&actions[0]).unwrap();
+        assert_eq!(json["id"], 0x7b);
+        assert_eq!(json["sourceUnitTag"], serde_json::json!([21875, 21875]));
+        assert_eq!(json["abilityId"], serde_json::json!([117, 98, 79, 65]));
+        assert_eq!(json["orderId"], serde_json::json!([116, 108, 97, 111]));
+        assert_eq!(json["rawOpcode"], 0x7a);
+        assert_eq!(json["normalizedOpcode"], 0x7b);
     }
 }

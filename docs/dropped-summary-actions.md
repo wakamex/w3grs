@@ -11,6 +11,23 @@ summary path used by `W3GReplay::parse_bytes`; it is not necessarily a loss
 from the detailed API. When the low-level parser has a public `Action` variant
 for a dropped id, that variant is listed below.
 
+By default, the low-level parser also follows `w3gjs` for ids that upstream
+drops. The optional Cargo feature `extended-actions` intentionally diverges from
+that default for selected conformance-critical actions. At the time of writing,
+it emits normalized action id `0x7b` as `Action::CommandCardSource` and exposes
+other still-undecoded ids as `Action::OpaqueDroppedAction` in the
+low-level/timed action stream.
+
+The table mixes two cases:
+
+- Summary-dropped actions that are already exposed in the low-level API, such as
+  `SelectSubgroup`, `SelectUnit`, `AllyPing`, `Mouse`, `BlzSync`, and
+  `CommandFrame`.
+- Summary-dropped actions that are not exposed by default. With
+  `extended-actions`, ids `0x02`, `0x50`, `0x60`, `0x62`, `0x69`, `0x6a`, and
+  `0x7a` are emitted as opaque payloads, while `0x7b` is decoded as a
+  command-card/source action.
+
 Action ids are normalized with the same rule as the parser: for post-2.0.2
 replays, raw action ids greater than `0x77` are shifted up by one.
 
@@ -35,24 +52,24 @@ short-circuits, so they are reported separately.
 
 | Normalized id | Raw ids observed | Dropped count | Total observed | Dropped % | Summary behavior | Low-level Action variant |
 |---:|---|---:|---:|---:|---|---|
-| `0x02` | 0x02 | 13 | 13 | 100.00% | drop: no summary effect | none exposed by low-level parser |
+| `0x02` | 0x02 | 13 | 13 | 100.00% | drop: no summary effect | `OpaqueDroppedAction` with `extended-actions` |
 | `0x19` | 0x19 | 163064 | 163064 | 100.00% | drop: subgroup selection | SelectSubgroup |
 | `0x1a` | 0x1a | 163532 | 163532 | 100.00% | drop: pre-subselection marker | PreSubselection |
 | `0x1b` | 0x1b | 79978 | 79978 | 100.00% | drop: select unit | SelectUnit |
-| `0x50` | 0x50 | 25 | 25 | 100.00% | drop: alliance flags | none exposed by low-level parser |
-| `0x60` | 0x60 | 2880 | 2880 | 100.00% | drop: cheat/map trigger text | none exposed by low-level parser |
-| `0x62` | 0x62 | 3094 | 3094 | 100.00% | drop: UI/control action | none exposed by low-level parser |
+| `0x50` | 0x50 | 25 | 25 | 100.00% | drop: alliance flags | `OpaqueDroppedAction` with `extended-actions` |
+| `0x60` | 0x60 | 2880 | 2880 | 100.00% | drop: cheat/map trigger text | `OpaqueDroppedAction` with `extended-actions` |
+| `0x62` | 0x62 | 3094 | 3094 | 100.00% | drop: UI/control action | `OpaqueDroppedAction` with `extended-actions` |
 | `0x68` | 0x68 | 580 | 580 | 100.00% | drop: ally ping | AllyPing |
-| `0x69` | 0x69 | 6 | 6 | 100.00% | drop: UI/control action | none exposed by low-level parser |
-| `0x6a` | 0x6a | 6 | 6 | 100.00% | drop: UI/control action | none exposed by low-level parser |
+| `0x69` | 0x69 | 6 | 6 | 100.00% | drop: UI/control action | `OpaqueDroppedAction` with `extended-actions` |
+| `0x6a` | 0x6a | 6 | 6 | 100.00% | drop: UI/control action | `OpaqueDroppedAction` with `extended-actions` |
 | `0x6b` | 0x6b | 548 | 548 | 100.00% | drop: game cache/sync storage | BlzCacheStoreInt |
 | `0x75` | 0x75 | 232 | 232 | 100.00% | drop: arrow key | ArrowKey |
 | `0x76` | 0x76 | 28872 | 28872 | 100.00% | drop: mouse event | Mouse |
 | `0x77` | 0x77 | 2 | 14 | 14.29% | drop: W3 API command | W3Api |
 | `0x78` | 0x78 | 100 | 100 | 100.00% | drop: BLZ sync | BlzSync |
 | `0x79` | 0x79 | 4361 | 4361 | 100.00% | drop: command frame | CommandFrame |
-| `0x7a` | 0x7a | 495 | 495 | 100.00% | drop: Reforged/post-202 action | none exposed by low-level parser |
-| `0x7b` | 0x7a, 0x7b | 29654 | 29654 | 100.00% | drop: Reforged/post-202 action | none exposed by low-level parser |
+| `0x7a` | 0x7a | 495 | 495 | 100.00% | drop: Reforged/post-202 action | `OpaqueDroppedAction` with `extended-actions` |
+| `0x7b` | 0x7a, 0x7b | 29654 | 29654 | 100.00% | drop by default: Reforged/post-202 command-card source action; emitted with `extended-actions` | `CommandCardSource` with `extended-actions` |
 
 ## Truncated Or Unclassified Starts
 

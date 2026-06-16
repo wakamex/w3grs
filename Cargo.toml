@@ -20,6 +20,10 @@ include = [
     "/tests/*.rs",
 ]
 
+[features]
+default = []
+extended-actions = []
+
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 prost = "0.14"

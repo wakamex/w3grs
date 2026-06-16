@@ -12,6 +12,15 @@ The upstream TypeScript source is tracked as a Git submodule in `upstream/w3gjs`
 cargo add w3grs
 ```
 
+Optional low-level extensions that intentionally diverge from `w3gjs` can be
+enabled with Cargo features. For example, `extended-actions` exposes additional
+action variants in the detailed low-level action stream while keeping default
+parsing output aligned with `w3gjs`:
+
+```sh
+cargo add w3grs --features extended-actions
+```
+
 ## Development Checkout
 
 Clone with submodules when you want to run the repository's `w3gjs` parity and speed comparison scripts:
@@ -74,6 +83,21 @@ fn main() -> w3grs::Result<()> {
     Ok(())
 }
 ```
+
+With the `extended-actions` feature enabled, the low-level/timed action stream
+also emits additional actions that `w3gjs` drops:
+
+- `Action::CommandCardSource` for normalized action id `0x7b`. This post-2.0.2
+  command-card/source action carries `source_unit_tag`, `ability_id`,
+  `order_id`, `raw_opcode`, and `normalized_opcode` so downstream simulators can
+  attribute command-card orders to the producing unit.
+- `Action::OpaqueDroppedAction` for normalized ids `0x02`, `0x50`, `0x60`,
+  `0x62`, `0x69`, `0x6a`, and `0x7a`. This preserves `raw_opcode`,
+  `normalized_opcode`, and exact payload bytes for downstream inspection while
+  their semantics are still unknown.
+
+The feature is disabled by default because these actions intentionally diverge
+from `w3gjs` output.
 
 ## Upstream Parity
 
