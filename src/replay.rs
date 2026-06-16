@@ -1,11 +1,8 @@
 //! High-level replay parser port.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -30,7 +27,7 @@ use crate::{
 pub struct W3GReplay {
     parser: ReplayParser,
     context: Option<ReplayContext>,
-    players: HashMap<u8, Player>,
+    players: FxHashMap<u8, Player>,
     observers: Vec<String>,
     chatlog: Vec<ChatMessage>,
     id: String,
@@ -165,7 +162,7 @@ impl W3GReplay {
     }
 
     fn handle_basic_replay_information(&mut self, metadata: &ReplayMetadata) {
-        let mut temp_players: HashMap<u8, PlayerRecord> = HashMap::new();
+        let mut temp_players: FxHashMap<u8, PlayerRecord> = FxHashMap::default();
         for player in &metadata.player_records {
             temp_players.insert(player.player_id, player.clone());
         }
@@ -324,7 +321,7 @@ impl W3GReplay {
         let non_obs_player_ids = non_obs_players
             .iter()
             .map(|player| player.id)
-            .collect::<HashSet<_>>();
+            .collect::<FxHashSet<_>>();
         let non_obs_leaves = self
             .leave_events
             .iter()
@@ -374,7 +371,7 @@ impl W3GReplay {
     }
 
     fn determine_matchup(&mut self) {
-        let mut team_races: HashMap<u8, Vec<String>> = HashMap::new();
+        let mut team_races: FxHashMap<u8, Vec<String>> = FxHashMap::default();
         for player in self.players.values() {
             if !self.is_observer(player) {
                 let race = player.effective_race_code().to_string();
@@ -563,7 +560,7 @@ impl Default for W3GReplay {
         Self {
             parser: ReplayParser::new(),
             context: None,
-            players: HashMap::new(),
+            players: FxHashMap::default(),
             observers: Vec::new(),
             chatlog: Vec::new(),
             id: String::new(),

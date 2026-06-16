@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -115,7 +116,7 @@ pub struct Player {
     pub buildings: ObjectTracker,
     pub heroes: Vec<HeroInfo>,
     #[serde(skip)]
-    hero_collector: HashMap<String, HeroCollectorInfo>,
+    hero_collector: FxHashMap<String, HeroCollectorInfo>,
     #[serde(skip)]
     hero_count: u32,
     pub actions: PlayerActions,
@@ -153,7 +154,7 @@ impl Player {
             items: ObjectTracker::default(),
             buildings: ObjectTracker::default(),
             heroes: Vec::new(),
-            hero_collector: HashMap::new(),
+            hero_collector: FxHashMap::default(),
             hero_count: 0,
             actions: PlayerActions::default(),
             group_hotkeys,
