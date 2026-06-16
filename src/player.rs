@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    action::Action,
+    action::{Action, FourCC},
     convert::player_color,
     formatters::object_id_formatter,
     mappings::{ability_to_hero, building_name, item_name, unit_name, upgrade_name},
@@ -247,29 +247,44 @@ impl Player {
         }
     }
 
-    pub fn handle_0x10(&mut self, item_id: &ItemId, game_time: u32) {
-        if let ItemId::StringEncoded(action_id) = item_id {
-            match action_id.chars().next() {
-                Some('A') => self.handle_hero_skill(action_id, game_time),
-                Some('R') => self.handle_stringencoded_item_id(action_id, game_time),
-                Some('u' | 'e' | 'h' | 'o') => {
-                    if self.race_detected.is_empty() {
-                        self.detect_race_by_action_id(action_id);
-                    }
-                    self.handle_stringencoded_item_id(action_id, game_time);
+    fn handle_0x10_stringencoded(&mut self, action_id: &str, game_time: u32) {
+        match action_id.chars().next() {
+            Some('A') => self.handle_hero_skill(action_id, game_time),
+            Some('R') => self.handle_stringencoded_item_id(action_id, game_time),
+            Some('u' | 'e' | 'h' | 'o') => {
+                if self.race_detected.is_empty() {
+                    self.detect_race_by_action_id(action_id);
                 }
-                _ => self.handle_stringencoded_item_id(action_id, game_time),
+                self.handle_stringencoded_item_id(action_id, game_time);
             }
+            _ => self.handle_stringencoded_item_id(action_id, game_time),
+        }
 
-            if !action_id.starts_with('0') {
-                self.actions.buildtrain += 1;
-            } else {
-                self.actions.ability += 1;
+        if !action_id.starts_with('0') {
+            self.actions.buildtrain += 1;
+        } else {
+            self.actions.ability += 1;
+        }
+    }
+
+    pub fn handle_0x10(&mut self, item_id: &ItemId, game_time: u32) {
+        match item_id {
+            ItemId::StringEncoded(action_id) => {
+                self.handle_0x10_stringencoded(action_id, game_time)
             }
+            ItemId::Alphanumeric(_) => self.actions.buildtrain += 1,
+        }
+        self.currently_tracked_apm += 1;
+    }
+
+    pub(crate) fn handle_0x10_order_id(&mut self, order_id: FourCC, game_time: u32) {
+        if is_string_encoded_order_id(order_id) {
+            with_order_id_str(order_id, |action_id| {
+                self.handle_0x10_stringencoded(action_id, game_time);
+            });
         } else {
             self.actions.buildtrain += 1;
         }
-
         self.currently_tracked_apm += 1;
     }
 
@@ -284,6 +299,19 @@ impl Player {
                 }
             }
             ItemId::StringEncoded(value) => self.handle_stringencoded_item_id(value, game_time),
+        }
+    }
+
+    pub(crate) fn handle_0x11_order_id(&mut self, order_id: FourCC, game_time: u32) {
+        self.currently_tracked_apm += 1;
+        if is_string_encoded_order_id(order_id) {
+            with_order_id_str(order_id, |action_id| {
+                self.handle_stringencoded_item_id(action_id, game_time);
+            });
+        } else if is_basic_action(&order_id) {
+            self.actions.basic += 1;
+        } else {
+            self.actions.ability += 1;
         }
     }
 
@@ -302,6 +330,22 @@ impl Player {
         self.currently_tracked_apm += 1;
     }
 
+    pub(crate) fn handle_0x12_order_id(&mut self, order_id: FourCC, game_time: u32) {
+        if is_string_encoded_order_id(order_id) {
+            self.actions.ability += 1;
+            with_order_id_str(order_id, |action_id| {
+                self.handle_stringencoded_item_id(action_id, game_time);
+            });
+        } else if is_rightclick_action(&order_id) {
+            self.actions.rightclick += 1;
+        } else if is_basic_action(&order_id) {
+            self.actions.basic += 1;
+        } else {
+            self.actions.ability += 1;
+        }
+        self.currently_tracked_apm += 1;
+    }
+
     pub fn handle_0x13(&mut self) {
         self.actions.item += 1;
         self.currently_tracked_apm += 1;
@@ -314,6 +358,17 @@ impl Player {
             }
             ItemId::Alphanumeric(value) if is_basic_action(value) => self.actions.basic += 1,
             _ => self.actions.ability += 1,
+        }
+        self.currently_tracked_apm += 1;
+    }
+
+    pub(crate) fn handle_0x14_order_id(&mut self, order_id: FourCC) {
+        if !is_string_encoded_order_id(order_id) && is_rightclick_action(&order_id) {
+            self.actions.rightclick += 1;
+        } else if !is_string_encoded_order_id(order_id) && is_basic_action(&order_id) {
+            self.actions.basic += 1;
+        } else {
+            self.actions.ability += 1;
         }
         self.currently_tracked_apm += 1;
     }
@@ -450,6 +505,32 @@ fn is_rightclick_action(input: &[u8]) -> bool {
 
 fn is_basic_action(input: &[u8]) -> bool {
     input.first().copied().unwrap_or(u8::MAX) <= 0x19 && input.get(1) == Some(&0)
+}
+
+fn is_string_encoded_order_id(order_id: FourCC) -> bool {
+    (0x41..=0x7a).contains(&order_id[3])
+}
+
+fn string_encoded_order_id_bytes(order_id: FourCC) -> FourCC {
+    [order_id[3], order_id[2], order_id[1], order_id[0]]
+}
+
+fn order_id_string(order_id: FourCC) -> String {
+    string_encoded_order_id_bytes(order_id)
+        .iter()
+        .map(|byte| *byte as char)
+        .collect()
+}
+
+fn with_order_id_str<T>(order_id: FourCC, callback: impl FnOnce(&str) -> T) -> T {
+    let bytes = string_encoded_order_id_bytes(order_id);
+    match std::str::from_utf8(&bytes) {
+        Ok(value) => callback(value),
+        Err(_) => {
+            let value = order_id_string(order_id);
+            callback(&value)
+        }
+    }
 }
 
 pub fn formatted_order_id(order_id: [u8; 4]) -> ItemId {

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Error, Result,
-    action::{Action, SummaryAction},
+    action::{Action, FourCC, SummaryAction},
     buffer::to_hex,
     convert::{game_version, map_filename},
     formatters::race_flag_formatter,
@@ -20,11 +20,10 @@ use crate::{
         PlayerChatMessageBlock, TimeslotBlock,
     },
     metadata::{PlayerRecord, ReplayMetadata},
-    player::{Player, formatted_order_id},
+    player::Player,
     raw::SubHeader,
     replay_parser::{ReplayParser, ReplayParserOutput},
     sort::sort_players,
-    types::ItemId,
 };
 
 #[derive(Debug)]
@@ -727,22 +726,20 @@ fn get_observer_mode(referee_flag: bool, observer_mode: u8) -> ObserverMode {
 fn handle_action_for_player(action: &Action, current_player: &mut Player, total_time_tracker: u32) {
     match action {
         Action::UnitBuildingAbilityNoParams { order_id, .. } => {
-            let item_id = formatted_order_id(*order_id);
-            if matches!(&item_id, ItemId::StringEncoded(value) if value == "tert" || value == "tret")
-            {
+            if is_retraining_order_id(*order_id) {
                 current_player.handle_retraining(total_time_tracker);
             }
-            current_player.handle_0x10(&item_id, total_time_tracker);
+            current_player.handle_0x10_order_id(*order_id, total_time_tracker);
         }
         Action::UnitBuildingAbilityTargetPosition { order_id, .. } => {
-            current_player.handle_0x11(&formatted_order_id(*order_id), total_time_tracker);
+            current_player.handle_0x11_order_id(*order_id, total_time_tracker);
         }
         Action::UnitBuildingAbilityTargetPositionObject { order_id, .. } => {
-            current_player.handle_0x12(&formatted_order_id(*order_id), total_time_tracker);
+            current_player.handle_0x12_order_id(*order_id, total_time_tracker);
         }
         Action::GiveItemToUnit { .. } => current_player.handle_0x13(),
         Action::UnitBuildingAbilityTwoTargetPositions { order_id1, .. } => {
-            current_player.handle_0x14(&formatted_order_id(*order_id1));
+            current_player.handle_0x14_order_id(*order_id1);
         }
         Action::ChangeSelection { select_mode, .. } => {
             if *select_mode == 0x02 {
@@ -775,22 +772,20 @@ fn handle_summary_action_for_player(
 ) {
     match action {
         SummaryAction::UnitBuildingAbilityNoParams { order_id } => {
-            let item_id = formatted_order_id(*order_id);
-            if matches!(&item_id, ItemId::StringEncoded(value) if value == "tert" || value == "tret")
-            {
+            if is_retraining_order_id(*order_id) {
                 current_player.handle_retraining(total_time_tracker);
             }
-            current_player.handle_0x10(&item_id, total_time_tracker);
+            current_player.handle_0x10_order_id(*order_id, total_time_tracker);
         }
         SummaryAction::UnitBuildingAbilityTargetPosition { order_id } => {
-            current_player.handle_0x11(&formatted_order_id(*order_id), total_time_tracker);
+            current_player.handle_0x11_order_id(*order_id, total_time_tracker);
         }
         SummaryAction::UnitBuildingAbilityTargetPositionObject { order_id } => {
-            current_player.handle_0x12(&formatted_order_id(*order_id), total_time_tracker);
+            current_player.handle_0x12_order_id(*order_id, total_time_tracker);
         }
         SummaryAction::GiveItemToUnit => current_player.handle_0x13(),
         SummaryAction::UnitBuildingAbilityTwoTargetPositions { order_id1 } => {
-            current_player.handle_0x14(&formatted_order_id(*order_id1));
+            current_player.handle_0x14_order_id(*order_id1);
         }
         SummaryAction::ChangeSelection { select_mode } => {
             if *select_mode == 0x02 {
@@ -819,6 +814,11 @@ fn handle_summary_action_for_player(
         SummaryAction::EscPressed => current_player.handle_esc_pressed(),
         SummaryAction::TransferResources { .. } => {}
     }
+}
+
+fn is_retraining_order_id(order_id: FourCC) -> bool {
+    let encoded = [order_id[3], order_id[2], order_id[1], order_id[0]];
+    encoded == *b"tert" || encoded == *b"tret"
 }
 
 #[cfg(test)]
