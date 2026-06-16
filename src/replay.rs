@@ -440,54 +440,83 @@ impl W3GReplay {
         }
     }
 
-    fn finalize(&self, parse_start: Instant) -> Result<ParserOutput> {
-        let context = self
-            .context
-            .as_ref()
-            .ok_or_else(|| Error::Message("missing replay context".to_string()))?;
-        let meta = &context.metadata;
+    fn finalize(&mut self, parse_start: Instant) -> Result<ParserOutput> {
+        let (
+            game_name,
+            random_seed,
+            start_spots,
+            creator,
+            map,
+            build_number,
+            version,
+            duration,
+            expansion,
+            settings,
+        ) = {
+            let context = self
+                .context
+                .as_ref()
+                .ok_or_else(|| Error::Message("missing replay context".to_string()))?;
+            let meta = &context.metadata;
+            let map_path = meta.map.map_name.clone();
+            let settings = ReplaySettings {
+                referees: meta.map.referees,
+                observer_mode: get_observer_mode(meta.map.referees, meta.map.observer_mode),
+                fixed_teams: meta.map.fixed_teams,
+                full_shared_unit_control: meta.map.full_shared_unit_control,
+                always_visible: meta.map.always_visible,
+                hide_terrain: meta.map.hide_terrain,
+                map_explored: meta.map.map_explored,
+                teams_together: meta.map.teams_together,
+                random_hero: meta.map.random_hero,
+                random_races: meta.map.random_races,
+                speed: meta.map.speed,
+            };
+            let map = ReplayMap {
+                file: map_filename(&map_path),
+                path: map_path,
+                checksum: meta.map.map_checksum.clone(),
+                checksum_sha1: meta.map.map_checksum_sha1.clone(),
+            };
 
-        let mut players = self.players.values().cloned().collect::<Vec<_>>();
-        players.sort_by(sort_players);
-
-        let settings = ReplaySettings {
-            referees: meta.map.referees,
-            observer_mode: get_observer_mode(meta.map.referees, meta.map.observer_mode),
-            fixed_teams: meta.map.fixed_teams,
-            full_shared_unit_control: meta.map.full_shared_unit_control,
-            always_visible: meta.map.always_visible,
-            hide_terrain: meta.map.hide_terrain,
-            map_explored: meta.map.map_explored,
-            teams_together: meta.map.teams_together,
-            random_hero: meta.map.random_hero,
-            random_races: meta.map.random_races,
-            speed: meta.map.speed,
+            (
+                meta.game_name.clone(),
+                meta.random_seed,
+                meta.start_spot_count,
+                meta.map.creator.clone(),
+                map,
+                context.subheader.build_no,
+                game_version(context.subheader.version),
+                context.subheader.replay_length_ms,
+                context.subheader.game_identifier == "PX3W",
+                settings,
+            )
         };
 
+        let mut players = std::mem::take(&mut self.players)
+            .into_values()
+            .collect::<Vec<_>>();
+        players.sort_by(sort_players);
+
         Ok(ParserOutput {
-            id: self.id.clone(),
-            game_name: meta.game_name.clone(),
-            random_seed: meta.random_seed,
-            start_spots: meta.start_spot_count,
-            observers: self.observers.clone(),
+            id: std::mem::take(&mut self.id),
+            game_name,
+            random_seed,
+            start_spots,
+            observers: std::mem::take(&mut self.observers),
             players,
-            matchup: self.matchup.clone(),
-            creator: meta.map.creator.clone(),
-            game_type: self.game_type.clone(),
-            chat: self.chatlog.clone(),
+            matchup: std::mem::take(&mut self.matchup),
+            creator,
+            game_type: std::mem::take(&mut self.game_type),
+            chat: std::mem::take(&mut self.chatlog),
             apm: ApmSettings {
                 tracking_interval: self.player_action_track_interval,
             },
-            map: ReplayMap {
-                path: meta.map.map_name.clone(),
-                file: map_filename(&meta.map.map_name),
-                checksum: meta.map.map_checksum.clone(),
-                checksum_sha1: meta.map.map_checksum_sha1.clone(),
-            },
-            build_number: context.subheader.build_no,
-            version: game_version(context.subheader.version),
-            duration: context.subheader.replay_length_ms,
-            expansion: context.subheader.game_identifier == "PX3W",
+            map,
+            build_number,
+            version,
+            duration,
+            expansion,
             parse_time: parse_start.elapsed().as_millis() as u64,
             winning_team_id: self.winning_team_id,
             settings,
