@@ -149,12 +149,8 @@ fn get_uncompressed_data_sequential<B>(blocks: &[B], capacity: usize) -> Result<
 where
     B: CompressedBlock,
 {
-    let mut out = Vec::with_capacity(capacity);
-
-    for block in blocks {
-        decode_block_to_vec(block, &mut out)?;
-    }
-
+    let mut out = vec![0; capacity];
+    decode_blocks_to_slice(blocks, &mut out)?;
     Ok(out)
 }
 
@@ -238,21 +234,6 @@ where
             needed: out.len().saturating_sub(offset),
         });
     }
-
-    Ok(())
-}
-
-fn decode_block_to_vec<B>(block: &B, out: &mut Vec<u8>) -> Result<()>
-where
-    B: CompressedBlock,
-{
-    let content = block.content();
-    if content.is_empty() {
-        return Ok(());
-    }
-
-    let mut decoder = ZlibDecoder::new(content);
-    decoder.read_to_end(out)?;
 
     Ok(())
 }
