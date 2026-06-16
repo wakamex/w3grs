@@ -167,6 +167,7 @@ struct PhaseStats {
     metadata: Stats,
     setup: Stats,
     game_data: Stats,
+    game_data_counters: GameDataCounters,
     postprocess: Stats,
     finalize: Stats,
     total: Stats,
@@ -180,9 +181,48 @@ impl PhaseStats {
             metadata: Stats::from_ms_samples(samples.iter().map(|sample| sample.metadata_ms)),
             setup: Stats::from_ms_samples(samples.iter().map(|sample| sample.setup_ms)),
             game_data: Stats::from_ms_samples(samples.iter().map(|sample| sample.game_data_ms)),
+            game_data_counters: GameDataCounters::from_sample(
+                samples.last().copied().unwrap_or_default(),
+            ),
             postprocess: Stats::from_ms_samples(samples.iter().map(|sample| sample.postprocess_ms)),
             finalize: Stats::from_ms_samples(samples.iter().map(|sample| sample.finalize_ms)),
             total: Stats::from_ms_samples(samples.iter().map(|sample| sample.total_ms)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameDataCounters {
+    blocks: u64,
+    ignored_blocks: u64,
+    timeslots: u64,
+    command_blocks: u64,
+    skipped_command_blocks: u64,
+    action_bytes: u64,
+    skipped_action_bytes: u64,
+    actions: u64,
+    summary_actions: u64,
+    ignored_actions: u64,
+    chat_messages: u64,
+    leave_game_blocks: u64,
+}
+
+impl GameDataCounters {
+    fn from_sample(sample: ParsePhaseTimings) -> Self {
+        Self {
+            blocks: sample.game_data_blocks,
+            ignored_blocks: sample.game_data_ignored_blocks,
+            timeslots: sample.game_data_timeslots,
+            command_blocks: sample.game_data_command_blocks,
+            skipped_command_blocks: sample.game_data_skipped_command_blocks,
+            action_bytes: sample.game_data_action_bytes,
+            skipped_action_bytes: sample.game_data_skipped_action_bytes,
+            actions: sample.game_data_actions,
+            summary_actions: sample.game_data_summary_actions,
+            ignored_actions: sample.game_data_ignored_actions,
+            chat_messages: sample.game_data_chat_messages,
+            leave_game_blocks: sample.game_data_leave_game_blocks,
         }
     }
 }

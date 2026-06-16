@@ -132,7 +132,7 @@ node scripts/benchmark.mjs replay.w3g --phases
 ```
 
 The benchmark reads the replay once per parser process, warms both parsers, then reports timed in-process parses. `--prepare` runs the local `w3gjs` install/build and builds the Rust benchmark binary in release mode.
-Use `--phases` to include a Rust parser phase breakdown for raw block parsing, decompression, metadata, setup, game data scanning, postprocessing, and final output construction.
+Use `--phases` to include a Rust parser phase breakdown for raw block parsing, decompression, metadata, setup, game data scanning, postprocessing, and final output construction. Phase output also includes game-data counters for scanned blocks, command blocks, actions, summary actions, and skipped data.
 
 For Rust-only phase timing, run the benchmark binary directly:
 

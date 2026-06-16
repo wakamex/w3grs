@@ -3,7 +3,7 @@
 use crate::{
     Result,
     action::Action,
-    game_data::{GameDataBlock, GameDataParser, GameDataSummaryVisitor},
+    game_data::{GameDataBlock, GameDataParser, GameDataSummaryStats, GameDataSummaryVisitor},
     metadata::{MetadataParser, ReplayMetadata},
     raw::{Header, RawParser, SubHeader, get_uncompressed_data},
 };
@@ -74,6 +74,24 @@ impl ReplayParser {
     {
         self.game_data_parser
             .parse_summary_with(game_data, is_post_202_replay_format, visitor)
+    }
+
+    pub(crate) fn parse_summary_game_data_slice_with_stats<V>(
+        &self,
+        game_data: &[u8],
+        is_post_202_replay_format: bool,
+        visitor: &mut V,
+        stats: &mut GameDataSummaryStats,
+    ) -> Result<()>
+    where
+        V: GameDataSummaryVisitor,
+    {
+        self.game_data_parser.parse_summary_with_stats(
+            game_data,
+            is_post_202_replay_format,
+            visitor,
+            stats,
+        )
     }
 }
 

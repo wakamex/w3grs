@@ -1,7 +1,7 @@
 //! Game data block parser port.
 
 use crate::{
-    action::{Action, ActionParser, SummaryAction},
+    action::{Action, ActionParser, SummaryAction, SummaryActionStats},
     buffer::StatefulBufferParser,
     error::{Error, Result},
 };
@@ -96,6 +96,22 @@ pub(crate) trait GameDataSummaryVisitor {
     fn handle_leave_game(&mut self, leave: LeaveGameBlock) -> Result<()>;
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct GameDataSummaryStats {
+    pub blocks: u64,
+    pub ignored_blocks: u64,
+    pub timeslots: u64,
+    pub command_blocks: u64,
+    pub skipped_command_blocks: u64,
+    pub action_bytes: u64,
+    pub skipped_action_bytes: u64,
+    pub actions: u64,
+    pub summary_actions: u64,
+    pub ignored_actions: u64,
+    pub chat_messages: u64,
+    pub leave_game_blocks: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct GameDataParser;
 
@@ -157,6 +173,25 @@ impl GameDataParser {
 
         Ok(())
     }
+
+    pub(crate) fn parse_summary_with_stats<V>(
+        &self,
+        data: &[u8],
+        is_post_202_replay_format: bool,
+        visitor: &mut V,
+        stats: &mut GameDataSummaryStats,
+    ) -> Result<()>
+    where
+        V: GameDataSummaryVisitor,
+    {
+        let mut parser = StatefulBufferParser::new(data);
+
+        while !parser.is_done() {
+            parse_summary_block_with_stats(&mut parser, is_post_202_replay_format, visitor, stats)?;
+        }
+
+        Ok(())
+    }
 }
 
 fn parse_block(
@@ -212,6 +247,51 @@ where
         0x23 => parser.skip(10)?,
         0x2f => parser.skip(8)?,
         _ => {}
+    }
+    Ok(())
+}
+
+fn parse_summary_block_with_stats<V>(
+    parser: &mut StatefulBufferParser<'_>,
+    is_post_202_replay_format: bool,
+    visitor: &mut V,
+    stats: &mut GameDataSummaryStats,
+) -> Result<()>
+where
+    V: GameDataSummaryVisitor,
+{
+    let id = parser.read_u8()?;
+    stats.blocks += 1;
+    match id {
+        0x17 => {
+            stats.leave_game_blocks += 1;
+            visitor.handle_leave_game(parse_leave_game_block(parser)?)?;
+        }
+        0x1a..=0x1c => {
+            stats.ignored_blocks += 1;
+            parser.skip(4)?;
+        }
+        0x1f | 0x1e => {
+            stats.timeslots += 1;
+            parse_timeslot_summary_with_stats(parser, is_post_202_replay_format, visitor, stats)?;
+        }
+        0x20 => {
+            stats.chat_messages += 1;
+            visitor.handle_chat_message(parse_chat_message(parser)?)?;
+        }
+        0x22 => {
+            stats.ignored_blocks += 1;
+            parse_unknown_0x22(parser)?;
+        }
+        0x23 => {
+            stats.ignored_blocks += 1;
+            parser.skip(10)?;
+        }
+        0x2f => {
+            stats.ignored_blocks += 1;
+            parser.skip(8)?;
+        }
+        _ => stats.ignored_blocks += 1,
     }
     Ok(())
 }
@@ -322,6 +402,62 @@ where
             action_parser.parse_summary_with(actions, is_post_202_replay_format, |action| {
                 visitor.handle_summary_action(player_id, action)
             })?;
+        }
+
+        parser.set_offset(action_start.saturating_add(action_block_length));
+    }
+
+    Ok(())
+}
+
+fn parse_timeslot_summary_with_stats<V>(
+    parser: &mut StatefulBufferParser<'_>,
+    is_post_202_replay_format: bool,
+    visitor: &mut V,
+    stats: &mut GameDataSummaryStats,
+) -> Result<()>
+where
+    V: GameDataSummaryVisitor,
+{
+    let byte_count = parser.read_u16_le()? as usize;
+    let time_increment = parser.read_u16_le()?;
+    let action_block_last_offset = parser
+        .offset()
+        .checked_add(
+            byte_count
+                .checked_sub(2)
+                .ok_or_else(|| Error::Message("timeslot block byte count underflow".to_string()))?,
+        )
+        .ok_or_else(|| Error::Message("timeslot block offset overflow".to_string()))?;
+    let mut action_parser = ActionParser::new();
+
+    visitor.handle_time_increment(time_increment)?;
+
+    while parser.offset() < action_block_last_offset {
+        stats.command_blocks += 1;
+        let player_id = parser.read_u8()?;
+        let action_block_length = parser.read_u16_le()? as usize;
+        let action_start = parser.offset();
+        let action_end = action_start
+            .saturating_add(action_block_length)
+            .min(parser.buffer().len());
+        stats.action_bytes += action_end.saturating_sub(action_start) as u64;
+
+        if visitor.begin_command_block(player_id)? {
+            let actions = &parser.buffer()[action_start..action_end];
+            let mut action_stats = SummaryActionStats::default();
+            action_parser.parse_summary_with_stats(
+                actions,
+                is_post_202_replay_format,
+                &mut action_stats,
+                |action| visitor.handle_summary_action(player_id, action),
+            )?;
+            stats.actions += action_stats.actions;
+            stats.summary_actions += action_stats.emitted_actions;
+            stats.ignored_actions += action_stats.ignored_actions;
+        } else {
+            stats.skipped_command_blocks += 1;
+            stats.skipped_action_bytes += action_end.saturating_sub(action_start) as u64;
         }
 
         parser.set_offset(action_start.saturating_add(action_block_length));

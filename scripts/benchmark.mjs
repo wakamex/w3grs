@@ -161,6 +161,7 @@ function printSummary(replayPath, iterations, warmup, jsStats, rustStats) {
 
   if (rustStats.phases) {
     printPhaseSummary(rustStats.phases);
+    printGameDataCounters(rustStats.phases.gameDataCounters);
   }
 }
 
@@ -186,6 +187,21 @@ function printPhaseSummary(phases) {
       `${label.padEnd(12)} ${fmt(stats.totalMs)} ${fmt(stats.meanMs)} ${share}%`,
     );
   }
+}
+
+function printGameDataCounters(counters) {
+  console.log("");
+  console.log("w3grs game-data counters");
+  console.log(`blocks:          ${counters.blocks}`);
+  console.log(`timeslots:       ${counters.timeslots}`);
+  console.log(`commands:        ${counters.commandBlocks}`);
+  console.log(`skipped commands:${String(counters.skippedCommandBlocks).padStart(8)}`);
+  console.log(`action bytes:    ${counters.actionBytes}`);
+  console.log(`actions:         ${counters.actions}`);
+  console.log(`summary actions: ${counters.summaryActions}`);
+  console.log(`ignored actions: ${counters.ignoredActions}`);
+  console.log(`chat messages:   ${counters.chatMessages}`);
+  console.log(`leave blocks:    ${counters.leaveGameBlocks}`);
 }
 
 function parseArgs(args) {

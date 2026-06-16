@@ -244,6 +244,13 @@ pub(crate) enum SummaryAction {
     EnterBuildingSubmenu,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SummaryActionStats {
+    pub actions: u64,
+    pub emitted_actions: u64,
+    pub ignored_actions: u64,
+}
+
 impl Serialize for Action {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -590,6 +597,35 @@ impl ActionParser {
             match self.parse_summary_action(&mut parser, action_id, is_post_202_replay_format) {
                 Ok(Some(action)) => visitor(action)?,
                 Ok(None) => {}
+                Err(Error::UnexpectedEof { .. }) => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn parse_summary_with_stats<F>(
+        &mut self,
+        input: &[u8],
+        is_post_202_replay_format: bool,
+        stats: &mut SummaryActionStats,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        F: FnMut(SummaryAction) -> Result<()>,
+    {
+        let mut parser = StatefulBufferParser::new(input);
+
+        while !parser.is_done() {
+            let action_id = parser.read_u8()?;
+            stats.actions += 1;
+            match self.parse_summary_action(&mut parser, action_id, is_post_202_replay_format) {
+                Ok(Some(action)) => {
+                    stats.emitted_actions += 1;
+                    visitor(action)?;
+                }
+                Ok(None) => stats.ignored_actions += 1,
                 Err(Error::UnexpectedEof { .. }) => break,
                 Err(error) => return Err(error),
             }

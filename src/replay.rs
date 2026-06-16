@@ -13,7 +13,7 @@ use crate::{
     convert::{game_version, map_filename},
     formatters::race_flag_formatter,
     game_data::{
-        CommandBlock, GameDataBlock, GameDataSummaryVisitor, LeaveGameBlock,
+        CommandBlock, GameDataBlock, GameDataSummaryStats, GameDataSummaryVisitor, LeaveGameBlock,
         PlayerChatMessageBlock, TimeslotBlock,
     },
     metadata::{MetadataParser, PlayerRecord, ReplayMetadata},
@@ -107,11 +107,33 @@ impl W3GReplay {
             }
 
             let started = Instant::now();
-            parser.parse_summary_game_data_slice_with(
-                &prefix.decompressed_data[prefix.game_data_offset..],
-                prefix.metadata.is_post_202_replay_format,
-                self,
-            )?;
+            if let Some(phases) = phases.as_deref_mut() {
+                let mut stats = GameDataSummaryStats::default();
+                parser.parse_summary_game_data_slice_with_stats(
+                    &prefix.decompressed_data[prefix.game_data_offset..],
+                    prefix.metadata.is_post_202_replay_format,
+                    self,
+                    &mut stats,
+                )?;
+                phases.game_data_blocks = stats.blocks;
+                phases.game_data_ignored_blocks = stats.ignored_blocks;
+                phases.game_data_timeslots = stats.timeslots;
+                phases.game_data_command_blocks = stats.command_blocks;
+                phases.game_data_skipped_command_blocks = stats.skipped_command_blocks;
+                phases.game_data_action_bytes = stats.action_bytes;
+                phases.game_data_skipped_action_bytes = stats.skipped_action_bytes;
+                phases.game_data_actions = stats.actions;
+                phases.game_data_summary_actions = stats.summary_actions;
+                phases.game_data_ignored_actions = stats.ignored_actions;
+                phases.game_data_chat_messages = stats.chat_messages;
+                phases.game_data_leave_game_blocks = stats.leave_game_blocks;
+            } else {
+                parser.parse_summary_game_data_slice_with(
+                    &prefix.decompressed_data[prefix.game_data_offset..],
+                    prefix.metadata.is_post_202_replay_format,
+                    self,
+                )?;
+            }
             if let Some(phases) = phases.as_deref_mut() {
                 phases.game_data_ms = elapsed_ms(started);
             }
@@ -707,6 +729,18 @@ pub struct ParsePhaseTimings {
     pub postprocess_ms: f64,
     pub finalize_ms: f64,
     pub total_ms: f64,
+    pub game_data_blocks: u64,
+    pub game_data_ignored_blocks: u64,
+    pub game_data_timeslots: u64,
+    pub game_data_command_blocks: u64,
+    pub game_data_skipped_command_blocks: u64,
+    pub game_data_action_bytes: u64,
+    pub game_data_skipped_action_bytes: u64,
+    pub game_data_actions: u64,
+    pub game_data_summary_actions: u64,
+    pub game_data_ignored_actions: u64,
+    pub game_data_chat_messages: u64,
+    pub game_data_leave_game_blocks: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1002,6 +1036,9 @@ mod tests {
         assert!(phased.phases.total_ms > 0.0);
         assert!(phased.phases.decompress_ms > 0.0);
         assert!(phased.phases.game_data_ms > 0.0);
+        assert!(phased.phases.game_data_timeslots > 0);
+        assert!(phased.phases.game_data_command_blocks > 0);
+        assert!(phased.phases.game_data_actions > 0);
     }
 
     #[test]
