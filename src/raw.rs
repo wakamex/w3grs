@@ -15,7 +15,7 @@ const FULL_DECOMPRESSED_BLOCK_SIZE: u16 = 8192;
 const PARALLEL_DECOMPRESS_MIN_BLOCKS: usize = 192;
 const PARALLEL_DECOMPRESS_MIN_BLOCKS_PER_WORKER: usize = 64;
 const PARALLEL_DECOMPRESS_MIN_BYTES: usize = 1 << 20;
-const PARALLEL_DECOMPRESS_MAX_WORKERS: usize = 4;
+const PARALLEL_DECOMPRESS_MAX_WORKERS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
