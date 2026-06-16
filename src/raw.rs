@@ -1,8 +1,8 @@
 //! Raw replay parser port.
 
-use std::{io::Read, thread};
+use std::thread;
 
-use flate2::read::ZlibDecoder;
+use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -193,6 +193,7 @@ where
     B: CompressedBlock,
 {
     let mut offset: usize = 0;
+    let mut decompressor = Decompress::new(true);
     for block in blocks {
         let expected = block.decompressed_size();
         let content = block.content();
@@ -215,15 +216,7 @@ where
             });
         };
 
-        let mut decoder = ZlibDecoder::new(content);
-        decoder.read_exact(output)?;
-
-        let mut extra = [0; 1];
-        if decoder.read(&mut extra)? != 0 {
-            return Err(Error::Message(
-                "decompressed block exceeded declared size".to_string(),
-            ));
-        }
+        decode_block_to_slice(&mut decompressor, content, output, offset)?;
 
         offset = end;
     }
@@ -236,6 +229,49 @@ where
     }
 
     Ok(())
+}
+
+fn decode_block_to_slice(
+    decompressor: &mut Decompress,
+    content: &[u8],
+    output: &mut [u8],
+    output_offset: usize,
+) -> Result<()> {
+    decompressor.reset(true);
+    let status = decompressor
+        .decompress(content, output, FlushDecompress::Finish)
+        .map_err(|error| Error::Message(format!("zlib decompression failed: {error}")))?;
+    let written = decompressor.total_out() as usize;
+
+    if status == Status::StreamEnd && written == output.len() {
+        return Ok(());
+    }
+
+    if written < output.len() {
+        return Err(Error::UnexpectedEof {
+            offset: output_offset + written,
+            needed: output.len() - written,
+        });
+    }
+
+    let consumed = decompressor.total_in() as usize;
+    let remaining = content.get(consumed..).unwrap_or_default();
+    let mut extra = [0; 1];
+    let status = decompressor
+        .decompress(remaining, &mut extra, FlushDecompress::Finish)
+        .map_err(|error| Error::Message(format!("zlib decompression failed: {error}")))?;
+    let total_in = decompressor.total_in() as usize;
+    let total_out = decompressor.total_out() as usize;
+    // zlib-rs may report BufError when an exact-sized output buffer leaves no
+    // room for the final status transition. The scratch read above still
+    // catches any extra decompressed byte.
+    if (status == Status::StreamEnd || total_in == content.len()) && total_out == output.len() {
+        return Ok(());
+    }
+
+    Err(Error::Message(
+        "decompressed block exceeded declared size".to_string(),
+    ))
 }
 
 fn parallel_decompress_worker_count(blocks: usize, capacity: usize) -> usize {
