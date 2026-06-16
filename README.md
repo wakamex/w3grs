@@ -139,10 +139,10 @@ Replay: upstream/w3gjs/test/replays/132/reforged1.w3g
 Iterations: 2 timed, 1 warmup
 
 Parser   total ms   mean ms   min ms    max ms    players
-w3gjs       61.179    30.589    30.201    30.977        2
-w3grs        1.863     0.932     0.849     1.014        2
+w3gjs       61.097    30.548    26.996    34.101        2
+w3grs        0.800     0.400     0.382     0.418        2
 
-w3grs mean speedup vs w3gjs: 32.84x
+w3grs mean speedup vs w3gjs: 76.34x
 ```
 
 Benchmark results vary by machine, replay, iteration count, and current CPU load. Use larger iteration counts for less noisy comparisons:
@@ -167,5 +167,5 @@ The speed sweep reports:
 Recent local speed result on the upstream submodule replay fixtures with 1 timed parse and no warmup:
 
 ```text
-Speedup mean/min/max: 20.07x / 2.93x / 95.10x
+Speedup mean/min/max: 45.31x / 11.80x / 105.16x
 ```
