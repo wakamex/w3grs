@@ -6,16 +6,32 @@ pub fn item_name(id: &str) -> Option<&'static str> {
     lookup(&ITEMS_BY_ID, id)
 }
 
+pub fn item_id_for_order_id(order_id: [u8; 4]) -> Option<&'static str> {
+    lookup_order_id(&ITEM_IDS_BY_ORDER_ID, order_id)
+}
+
 pub fn unit_name(id: &str) -> Option<&'static str> {
     lookup(&UNITS_BY_ID, id)
+}
+
+pub fn unit_id_for_order_id(order_id: [u8; 4]) -> Option<&'static str> {
+    lookup_order_id(&UNIT_IDS_BY_ORDER_ID, order_id)
 }
 
 pub fn building_name(id: &str) -> Option<&'static str> {
     lookup(&BUILDINGS_BY_ID, id)
 }
 
+pub fn building_id_for_order_id(order_id: [u8; 4]) -> Option<&'static str> {
+    lookup_order_id(&BUILDING_IDS_BY_ORDER_ID, order_id)
+}
+
 pub fn upgrade_name(id: &str) -> Option<&'static str> {
     lookup(&UPGRADES_BY_ID, id)
+}
+
+pub fn upgrade_id_for_order_id(order_id: [u8; 4]) -> Option<&'static str> {
+    lookup_order_id(&UPGRADE_IDS_BY_ORDER_ID, order_id)
 }
 
 pub fn hero_ability_name(id: &str) -> Option<&'static str> {
@@ -27,11 +43,20 @@ pub fn ability_to_hero(id: &str) -> Option<&'static str> {
 }
 
 type ObjectTable = Vec<(&'static str, &'static str)>;
+type ObjectIdTable = Vec<([u8; 4], &'static str)>;
 
 static ITEMS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(ITEMS));
+static ITEM_IDS_BY_ORDER_ID: LazyLock<ObjectIdTable> =
+    LazyLock::new(|| build_order_id_lookup(ITEMS));
 static UNITS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(UNITS));
+static UNIT_IDS_BY_ORDER_ID: LazyLock<ObjectIdTable> =
+    LazyLock::new(|| build_order_id_lookup(UNITS));
 static BUILDINGS_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(BUILDINGS));
+static BUILDING_IDS_BY_ORDER_ID: LazyLock<ObjectIdTable> =
+    LazyLock::new(|| build_order_id_lookup(BUILDINGS));
 static UPGRADES_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(UPGRADES));
+static UPGRADE_IDS_BY_ORDER_ID: LazyLock<ObjectIdTable> =
+    LazyLock::new(|| build_order_id_lookup(UPGRADES));
 static HERO_ABILITIES_BY_ID: LazyLock<ObjectTable> = LazyLock::new(|| build_lookup(HERO_ABILITIES));
 static ABILITY_TO_HERO_BY_ID: LazyLock<ObjectTable> =
     LazyLock::new(|| build_lookup(ABILITY_TO_HERO));
@@ -43,10 +68,31 @@ fn lookup(table: &LazyLock<ObjectTable>, id: &str) -> Option<&'static str> {
         .map(|index| table[index].1)
 }
 
+fn lookup_order_id(table: &LazyLock<ObjectIdTable>, order_id: [u8; 4]) -> Option<&'static str> {
+    table
+        .binary_search_by(|(key, _)| key.cmp(&order_id))
+        .ok()
+        .map(|index| table[index].1)
+}
+
 fn build_lookup(entries: &'static [(&'static str, &'static str)]) -> ObjectTable {
     let mut table = entries.to_vec();
     table.sort_by_key(|(key, _)| *key);
     table
+}
+
+fn build_order_id_lookup(entries: &'static [(&'static str, &'static str)]) -> ObjectIdTable {
+    let mut table = entries
+        .iter()
+        .filter_map(|(key, _)| key_to_order_id(key).map(|order_id| (order_id, *key)))
+        .collect::<Vec<_>>();
+    table.sort_by_key(|(key, _)| *key);
+    table
+}
+
+fn key_to_order_id(key: &str) -> Option<[u8; 4]> {
+    let bytes = key.as_bytes();
+    (bytes.len() == 4).then(|| [bytes[3], bytes[2], bytes[1], bytes[0]])
 }
 
 pub const ITEMS: &[(&str, &str)] = &[
@@ -811,6 +857,10 @@ mod tests {
         assert_table_lookup(UPGRADES, upgrade_name);
         assert_table_lookup(HERO_ABILITIES, hero_ability_name);
         assert_table_lookup(ABILITY_TO_HERO, ability_to_hero);
+        assert_order_id_lookup(ITEMS, item_id_for_order_id);
+        assert_order_id_lookup(UNITS, unit_id_for_order_id);
+        assert_order_id_lookup(BUILDINGS, building_id_for_order_id);
+        assert_order_id_lookup(UPGRADES, upgrade_id_for_order_id);
     }
 
     fn assert_table_lookup(
@@ -819,6 +869,21 @@ mod tests {
     ) {
         for (key, value) in entries {
             assert_eq!(lookup(key), Some(*value), "lookup mismatch for {key}");
+        }
+    }
+
+    fn assert_order_id_lookup(
+        entries: &[(&'static str, &'static str)],
+        lookup: fn([u8; 4]) -> Option<&'static str>,
+    ) {
+        for (key, _) in entries {
+            if let Some(order_id) = key_to_order_id(key) {
+                assert_eq!(
+                    lookup(order_id),
+                    Some(*key),
+                    "order id lookup mismatch for {key}"
+                );
+            }
         }
     }
 }

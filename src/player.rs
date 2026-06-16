@@ -8,7 +8,10 @@ use crate::{
     action::{Action, FourCC},
     convert::player_color,
     formatters::object_id_formatter,
-    mappings::{ability_to_hero, building_name, item_name, unit_name, upgrade_name},
+    mappings::{
+        ability_to_hero, building_id_for_order_id, building_name, item_id_for_order_id, item_name,
+        unit_id_for_order_id, unit_name, upgrade_id_for_order_id, upgrade_name,
+    },
     retraining::{
         AbilityOrderEntry, RetrainingHistory, get_retraining_index,
         infer_hero_ability_levels_from_ability_order,
@@ -178,6 +181,17 @@ impl Player {
         .to_string();
     }
 
+    fn detect_race_by_order_id(&mut self, order_id: FourCC) {
+        self.race_detected = match order_id[3] {
+            b'e' => "N",
+            b'o' => "O",
+            b'h' => "H",
+            b'u' => "U",
+            _ => return,
+        }
+        .to_string();
+    }
+
     fn handle_stringencoded_item_id(&mut self, action_id: &str, game_time: u32) {
         if unit_name(action_id).is_some() {
             self.units.push(action_id, game_time);
@@ -187,6 +201,18 @@ impl Player {
             self.buildings.push(action_id, game_time);
         } else if upgrade_name(action_id).is_some() {
             self.upgrades.push(action_id, game_time);
+        }
+    }
+
+    fn handle_stringencoded_order_id(&mut self, order_id: FourCC, game_time: u32) {
+        if let Some(id) = unit_id_for_order_id(order_id) {
+            self.units.push(id, game_time);
+        } else if let Some(id) = item_id_for_order_id(order_id) {
+            self.items.push(id, game_time);
+        } else if let Some(id) = building_id_for_order_id(order_id) {
+            self.buildings.push(id, game_time);
+        } else if let Some(id) = upgrade_id_for_order_id(order_id) {
+            self.upgrades.push(id, game_time);
         }
     }
 
@@ -279,9 +305,21 @@ impl Player {
 
     pub(crate) fn handle_0x10_order_id(&mut self, order_id: FourCC, game_time: u32) {
         if is_string_encoded_order_id(order_id) {
-            with_order_id_str(order_id, |action_id| {
-                self.handle_0x10_stringencoded(action_id, game_time);
-            });
+            match order_id[3] {
+                b'A' => {
+                    with_order_id_str(order_id, |action_id| {
+                        self.handle_hero_skill(action_id, game_time);
+                    });
+                }
+                b'u' | b'e' | b'h' | b'o' => {
+                    if self.race_detected.is_empty() {
+                        self.detect_race_by_order_id(order_id);
+                    }
+                    self.handle_stringencoded_order_id(order_id, game_time);
+                }
+                _ => self.handle_stringencoded_order_id(order_id, game_time),
+            }
+            self.actions.buildtrain += 1;
         } else {
             self.actions.buildtrain += 1;
         }
@@ -305,9 +343,7 @@ impl Player {
     pub(crate) fn handle_0x11_order_id(&mut self, order_id: FourCC, game_time: u32) {
         self.currently_tracked_apm += 1;
         if is_string_encoded_order_id(order_id) {
-            with_order_id_str(order_id, |action_id| {
-                self.handle_stringencoded_item_id(action_id, game_time);
-            });
+            self.handle_stringencoded_order_id(order_id, game_time);
         } else if is_basic_action(&order_id) {
             self.actions.basic += 1;
         } else {
@@ -333,9 +369,7 @@ impl Player {
     pub(crate) fn handle_0x12_order_id(&mut self, order_id: FourCC, game_time: u32) {
         if is_string_encoded_order_id(order_id) {
             self.actions.ability += 1;
-            with_order_id_str(order_id, |action_id| {
-                self.handle_stringencoded_item_id(action_id, game_time);
-            });
+            self.handle_stringencoded_order_id(order_id, game_time);
         } else if is_rightclick_action(&order_id) {
             self.actions.rightclick += 1;
         } else if is_basic_action(&order_id) {
