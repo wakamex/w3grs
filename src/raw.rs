@@ -1,6 +1,6 @@
 //! Raw replay parser port.
 
-use std::io::Read;
+use std::{io::Read, thread};
 
 use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,10 @@ use crate::{
 
 const REPLAY_MAGIC: &[u8] = b"Warcraft III recorded game";
 const FULL_DECOMPRESSED_BLOCK_SIZE: u16 = 8192;
+const PARALLEL_DECOMPRESS_MIN_BLOCKS: usize = 192;
+const PARALLEL_DECOMPRESS_MIN_BLOCKS_PER_WORKER: usize = 64;
+const PARALLEL_DECOMPRESS_MIN_BYTES: usize = 1 << 20;
+const PARALLEL_DECOMPRESS_MAX_WORKERS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,18 +77,86 @@ pub fn get_uncompressed_data(blocks: &[DataBlock]) -> Result<Vec<u8>> {
         .iter()
         .map(|block| block.block_decompressed_size as usize)
         .sum();
+    let worker_count = parallel_decompress_worker_count(blocks.len(), capacity);
+    if worker_count > 1 {
+        return get_uncompressed_data_parallel(blocks, capacity, worker_count);
+    }
+
+    get_uncompressed_data_sequential(blocks, capacity)
+}
+
+fn get_uncompressed_data_sequential(blocks: &[DataBlock], capacity: usize) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(capacity);
 
     for block in blocks {
-        if block.block_content.is_empty() {
-            continue;
-        }
-
-        let mut decoder = ZlibDecoder::new(block.block_content.as_slice());
-        decoder.read_to_end(&mut out)?;
+        decode_block_to_vec(block, &mut out)?;
     }
 
     Ok(out)
+}
+
+fn get_uncompressed_data_parallel(
+    blocks: &[DataBlock],
+    capacity: usize,
+    worker_count: usize,
+) -> Result<Vec<u8>> {
+    let chunk_size = blocks.len().div_ceil(worker_count);
+    let mut chunks = Vec::with_capacity(worker_count);
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for chunk in blocks.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let capacity = chunk
+                    .iter()
+                    .map(|block| block.block_decompressed_size as usize)
+                    .sum();
+                get_uncompressed_data_sequential(chunk, capacity)
+            }));
+        }
+
+        for handle in handles {
+            chunks.push(
+                handle
+                    .join()
+                    .map_err(|_| Error::Message("decompression worker panicked".to_string()))??,
+            );
+        }
+
+        Ok::<_, Error>(())
+    })?;
+
+    let mut out = Vec::with_capacity(capacity);
+    for chunk in chunks {
+        out.extend(chunk);
+    }
+
+    Ok(out)
+}
+
+fn decode_block_to_vec(block: &DataBlock, out: &mut Vec<u8>) -> Result<()> {
+    if block.block_content.is_empty() {
+        return Ok(());
+    }
+
+    let mut decoder = ZlibDecoder::new(block.block_content.as_slice());
+    decoder.read_to_end(out)?;
+
+    Ok(())
+}
+
+fn parallel_decompress_worker_count(blocks: usize, capacity: usize) -> usize {
+    if blocks < PARALLEL_DECOMPRESS_MIN_BLOCKS || capacity < PARALLEL_DECOMPRESS_MIN_BYTES {
+        return 1;
+    }
+
+    let available = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(PARALLEL_DECOMPRESS_MAX_WORKERS);
+    available
+        .min(blocks / PARALLEL_DECOMPRESS_MIN_BLOCKS_PER_WORKER)
+        .max(1)
 }
 
 fn parse_header(parser: &mut StatefulBufferParser<'_>) -> Result<Header> {
