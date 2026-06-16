@@ -618,6 +618,26 @@ impl ActionParser {
     ) -> Result<Option<SummaryAction>> {
         let action_id = normalize_action_id(action_id, is_post_202_replay_format);
         let result = match action_id {
+            0x01 => {
+                parser.skip(1)?;
+                None
+            }
+            0x02 => None,
+            0x03 => {
+                parser.skip(1)?;
+                None
+            }
+            0x04 | 0x05 => None,
+            0x06 => {
+                skip_zero_term_string(parser)?;
+                skip_zero_term_string(parser)?;
+                parser.skip(1)?;
+                None
+            }
+            0x07 => {
+                parser.skip(4)?;
+                None
+            }
             0x10 => {
                 parser.skip(2)?;
                 let order_id = read_fourcc(parser)?;
@@ -650,6 +670,15 @@ impl ActionParser {
                 parser.skip(51)?;
                 None
             }
+            0x19 => {
+                parser.skip(12)?;
+                None
+            }
+            0x1a => None,
+            0x1b => {
+                parser.skip(9)?;
+                None
+            }
             0x16 => {
                 let select_mode = parser.read_u8()?;
                 let number_units = parser.read_u16_le()?;
@@ -679,23 +708,125 @@ impl ActionParser {
                 parser.skip(5)?;
                 Some(SummaryAction::RemoveUnitFromBuildingQueue)
             }
+            0x20 => None,
+            0x21 => {
+                parser.skip(8)?;
+                None
+            }
+            0x22..=0x26 => None,
+            0x27 | 0x28 => {
+                parser.skip(5)?;
+                None
+            }
+            0x29..=0x2c => None,
+            0x2d => {
+                parser.skip(5)?;
+                None
+            }
+            0x2e => {
+                parser.skip(4)?;
+                None
+            }
+            0x2f => None,
+            0x50 => {
+                parser.skip(5)?;
+                None
+            }
             0x51 => {
                 let slot = parser.read_u8()?;
                 let gold = parser.read_u32_le()?;
                 let lumber = parser.read_u32_le()?;
                 Some(SummaryAction::TransferResources { slot, gold, lumber })
             }
+            0x60 => {
+                parser.skip(8)?;
+                skip_zero_term_string(parser)?;
+                None
+            }
             0x61 => Some(SummaryAction::EscPressed),
+            0x62 => {
+                parser.skip(12)?;
+                None
+            }
+            0x63 | 0x64 => {
+                parser.skip(8)?;
+                None
+            }
             0x65 => {
                 parser.skip(8)?;
                 None
             }
             0x66 => Some(SummaryAction::ChooseHeroSkillSubmenu),
             0x67 => Some(SummaryAction::EnterBuildingSubmenu),
-            _ => {
-                let _ = self.parse_action_fields(parser, action_id)?;
+            0x68 => {
+                parser.skip(12)?;
                 None
             }
+            0x69 | 0x6a => {
+                parser.skip(16)?;
+                None
+            }
+            0x6b | 0x6c => {
+                skip_cache_desc(parser)?;
+                parser.skip(4)?;
+                None
+            }
+            0x6d => {
+                skip_cache_desc(parser)?;
+                parser.skip(1)?;
+                None
+            }
+            0x6e => {
+                skip_cache_desc(parser)?;
+                skip_cache_unit(parser)?;
+                None
+            }
+            0x70..=0x73 => {
+                skip_cache_desc(parser)?;
+                None
+            }
+            0x75 => {
+                parser.skip(1)?;
+                None
+            }
+            0x76 => {
+                parser.skip(10)?;
+                None
+            }
+            0x77 => {
+                parser.skip(8)?;
+                let buff_len = parser.read_u32_le()? as usize;
+                skip_usize(parser, buff_len)?;
+                None
+            }
+            0x78 => {
+                skip_zero_term_string(parser)?;
+                skip_zero_term_string(parser)?;
+                parser.skip(4)?;
+                None
+            }
+            0x79 => {
+                parser.skip(16)?;
+                skip_zero_term_string(parser)?;
+                None
+            }
+            0x7a => {
+                parser.skip(20)?;
+                None
+            }
+            0x7b => {
+                parser.skip(16)?;
+                None
+            }
+            0xa0 => {
+                parser.skip(14)?;
+                None
+            }
+            0xa1 => {
+                parser.skip(9)?;
+                None
+            }
+            _ => None,
         };
 
         self.old_action_id = action_id;
@@ -1051,6 +1182,25 @@ fn skip_selection_units(parser: &mut StatefulBufferParser<'_>, length: u16) -> R
     parser.skip(isize::try_from(usize::from(length) * 8).expect("u16 * 8 fits in isize"))
 }
 
+fn skip_usize(parser: &mut StatefulBufferParser<'_>, byte_count: usize) -> Result<()> {
+    let byte_count = isize::try_from(byte_count)
+        .map_err(|_| Error::Message("skip length overflow".to_string()))?;
+    parser.skip(byte_count)
+}
+
+fn skip_zero_term_string(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    let start = parser.offset();
+    let remaining = &parser.buffer()[start..];
+    let length = remaining
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or(Error::UnexpectedEof {
+            offset: start,
+            needed: 1,
+        })?;
+    skip_usize(parser, length + 1)
+}
+
 fn read_fourcc(parser: &mut StatefulBufferParser<'_>) -> Result<FourCC> {
     Ok([
         parser.read_u8()?,
@@ -1071,6 +1221,12 @@ fn read_cache_desc(parser: &mut StatefulBufferParser<'_>) -> Result<Cache> {
     })
 }
 
+fn skip_cache_desc(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    skip_zero_term_string(parser)?;
+    skip_zero_term_string(parser)?;
+    skip_zero_term_string(parser)
+}
+
 fn read_cache_item(parser: &mut StatefulBufferParser<'_>) -> Result<Item> {
     let item_id = read_fourcc(parser)?;
     let charges = parser.read_u32_le()?;
@@ -1086,6 +1242,14 @@ fn read_ability(parser: &mut StatefulBufferParser<'_>) -> Result<Ability> {
     let id = read_fourcc(parser)?;
     let level = parser.read_u32_le()?;
     Ok(Ability { id, level })
+}
+
+fn skip_cache_item(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    parser.skip(12)
+}
+
+fn skip_cache_ability(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    parser.skip(8)
 }
 
 fn read_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<HeroData> {
@@ -1140,6 +1304,24 @@ fn read_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<HeroDat
     })
 }
 
+fn skip_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    parser.skip(48)?;
+    let hero_abil_count = parser.read_u32_le()?;
+    let hero_abil_count = usize::try_from(hero_abil_count)
+        .map_err(|_| Error::Message("hero ability count overflow".to_string()))?;
+    for _ in 0..hero_abil_count {
+        skip_cache_ability(parser)?;
+    }
+    parser.skip(12)?;
+    let damage_count = parser.read_u32_le()?;
+    let damage_byte_count = usize::try_from(damage_count)
+        .ok()
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| Error::Message("damage count overflow".to_string()))?;
+    skip_usize(parser, damage_byte_count)?;
+    parser.skip(6)
+}
+
 fn read_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<Unit> {
     let unit_id = read_fourcc(parser)?;
     let items_count = parser.read_u32_le()?;
@@ -1153,6 +1335,17 @@ fn read_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<Unit> {
         items,
         hero_data,
     })
+}
+
+fn skip_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
+    parser.skip(4)?;
+    let items_count = parser.read_u32_le()?;
+    let items_count = usize::try_from(items_count)
+        .map_err(|_| Error::Message("cache item count overflow".to_string()))?;
+    for _ in 0..items_count {
+        skip_cache_item(parser)?;
+    }
+    skip_cache_hero_data(parser)
 }
 
 fn read_net_tag(parser: &mut StatefulBufferParser<'_>) -> Result<NetTag> {
