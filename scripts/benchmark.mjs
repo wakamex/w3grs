@@ -51,7 +51,12 @@ const jsStats = await benchmarkW3gjs({
   iterations,
   warmup,
 });
-const rustStats = benchmarkW3grs({ replayPath, iterations, warmup });
+const rustStats = benchmarkW3grs({
+  replayPath,
+  iterations,
+  warmup,
+  phases: options.phases,
+});
 
 if (options.json) {
   console.log(
@@ -96,10 +101,15 @@ async function benchmarkW3gjs({ entry, replayPath, iterations, warmup }) {
   return summarize("w3gjs", iterations, warmup, samples, lastPlayers);
 }
 
-function benchmarkW3grs({ replayPath, iterations, warmup }) {
+function benchmarkW3grs({ replayPath, iterations, warmup, phases }) {
+  const args = [replayPath, String(iterations), String(warmup)];
+  if (phases) {
+    args.push("--phases");
+  }
+
   const result = spawnSync(
     rustBenchBin,
-    [replayPath, String(iterations), String(warmup)],
+    args,
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -148,6 +158,34 @@ function printSummary(replayPath, iterations, warmup, jsStats, rustStats) {
   }
   console.log("");
   console.log(`w3grs mean speedup vs w3gjs: ${speedup.toFixed(2)}x`);
+
+  if (rustStats.phases) {
+    printPhaseSummary(rustStats.phases);
+  }
+}
+
+function printPhaseSummary(phases) {
+  const rows = [
+    ["raw", phases.raw],
+    ["decompress", phases.decompress],
+    ["metadata", phases.metadata],
+    ["setup", phases.setup],
+    ["game data", phases.gameData],
+    ["postprocess", phases.postprocess],
+    ["finalize", phases.finalize],
+  ];
+
+  console.log("");
+  console.log("w3grs phases");
+  console.log("Phase          total ms   mean ms   share");
+  for (const [label, stats] of rows) {
+    const share = ((stats.meanMs / phases.total.meanMs) * 100)
+      .toFixed(1)
+      .padStart(5);
+    console.log(
+      `${label.padEnd(12)} ${fmt(stats.totalMs)} ${fmt(stats.meanMs)} ${share}%`,
+    );
+  }
 }
 
 function parseArgs(args) {
@@ -158,6 +196,8 @@ function parseArgs(args) {
       parsed.prepare = true;
     } else if (arg === "--json") {
       parsed.json = true;
+    } else if (arg === "--phases") {
+      parsed.phases = true;
     } else if (arg === "--iterations" || arg === "-n") {
       parsed.iterations = parsePositiveInt(args[++i], arg);
     } else if (arg === "--warmup" || arg === "-w") {
@@ -208,6 +248,7 @@ Options:
   -n, --iterations N   Timed parses per parser (default: 25)
   -w, --warmup N       Warmup parses per parser (default: 5)
   --prepare            Run npm ci/build for w3gjs and cargo release build for w3grs
+  --phases             Include w3grs parser phase timings
   --json               Print machine-readable JSON
 
 Default replay:

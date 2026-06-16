@@ -128,9 +128,17 @@ Useful options:
 ```sh
 node scripts/benchmark.mjs replay.w3g --iterations 100 --warmup 10
 node scripts/benchmark.mjs replay.w3g --json
+node scripts/benchmark.mjs replay.w3g --phases
 ```
 
 The benchmark reads the replay once per parser process, warms both parsers, then reports timed in-process parses. `--prepare` runs the local `w3gjs` install/build and builds the Rust benchmark binary in release mode.
+Use `--phases` to include a Rust parser phase breakdown for raw block parsing, decompression, metadata, setup, game data scanning, postprocessing, and final output construction.
+
+For Rust-only phase timing, run the benchmark binary directly:
+
+```sh
+cargo run --release --bin w3grs-bench -- replay.w3g 100 10 --phases
+```
 
 Example smoke result on this repo's `reforged1.w3g` fixture with 2 timed iterations and 1 warmup:
 

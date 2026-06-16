@@ -16,10 +16,10 @@ use crate::{
         CommandBlock, GameDataBlock, GameDataSummaryVisitor, LeaveGameBlock,
         PlayerChatMessageBlock, TimeslotBlock,
     },
-    metadata::{PlayerRecord, ReplayMetadata},
+    metadata::{MetadataParser, PlayerRecord, ReplayMetadata},
     player::Player,
-    raw::SubHeader,
-    replay_parser::{ReplayParser, ReplayParserOutput},
+    raw::{RawParser, SubHeader, get_uncompressed_data},
+    replay_parser::{ReplayParser, ReplayParserOutput, ReplayParserSummaryPrefix},
     sort::sort_players,
 };
 
@@ -69,6 +69,22 @@ impl W3GReplay {
     }
 
     pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<ParserOutput> {
+        self.parse_bytes_summary(bytes, None)
+    }
+
+    #[doc(hidden)]
+    pub fn parse_bytes_with_phases(&mut self, bytes: &[u8]) -> Result<PhasedParserOutput> {
+        let mut phases = ParsePhaseTimings::default();
+        let output = self.parse_bytes_summary(bytes, Some(&mut phases))?;
+
+        Ok(PhasedParserOutput { output, phases })
+    }
+
+    fn parse_bytes_summary(
+        &mut self,
+        bytes: &[u8],
+        mut phases: Option<&mut ParsePhaseTimings>,
+    ) -> Result<ParserOutput> {
         if self.is_parsing {
             return Err(Error::ConcurrentParsingNotSupported);
         }
@@ -78,24 +94,77 @@ impl W3GReplay {
         let result = (|| {
             self.reset_state();
             let parser = ReplayParser::new();
-            let prefix = parser.parse_summary_prefix(bytes)?;
-            self.handle_basic_replay_information(&prefix.metadata);
+            let prefix = if let Some(phases) = phases.as_deref_mut() {
+                Self::parse_summary_prefix_with_phases(bytes, phases)?
+            } else {
+                parser.parse_summary_prefix(bytes)?
+            };
 
+            let started = Instant::now();
+            self.handle_basic_replay_information(&prefix.metadata);
+            if let Some(phases) = phases.as_deref_mut() {
+                phases.setup_ms = elapsed_ms(started);
+            }
+
+            let started = Instant::now();
             parser.parse_summary_game_data_slice_with(
                 &prefix.decompressed_data[prefix.game_data_offset..],
                 prefix.metadata.is_post_202_replay_format,
                 self,
             )?;
+            if let Some(phases) = phases.as_deref_mut() {
+                phases.game_data_ms = elapsed_ms(started);
+            }
 
+            let started = Instant::now();
             self.set_context(prefix.subheader, prefix.metadata);
             self.generate_id();
             self.determine_matchup();
             self.determine_winning_team();
             self.cleanup();
-            self.finalize(parse_start)
+            if let Some(phases) = phases.as_deref_mut() {
+                phases.postprocess_ms = elapsed_ms(started);
+            }
+
+            let started = Instant::now();
+            let output = self.finalize(parse_start)?;
+            if let Some(phases) = phases.as_deref_mut() {
+                phases.finalize_ms = elapsed_ms(started);
+                phases.total_ms = elapsed_ms(parse_start);
+            }
+
+            Ok(output)
         })();
         self.is_parsing = false;
         result
+    }
+
+    fn parse_summary_prefix_with_phases(
+        bytes: &[u8],
+        phases: &mut ParsePhaseTimings,
+    ) -> Result<ReplayParserSummaryPrefix> {
+        let raw_parser = RawParser::new();
+        let metadata_parser = MetadataParser::new();
+
+        let started = Instant::now();
+        let raw = raw_parser.parse(bytes)?;
+        phases.raw_ms = elapsed_ms(started);
+
+        let started = Instant::now();
+        let decompressed_data = get_uncompressed_data(&raw.blocks)?;
+        phases.decompress_ms = elapsed_ms(started);
+
+        let started = Instant::now();
+        let metadata_parts = metadata_parser.parse_data_without_game_data(&decompressed_data)?;
+        phases.metadata_ms = elapsed_ms(started);
+
+        Ok(ReplayParserSummaryPrefix {
+            header: raw.header,
+            subheader: raw.subheader,
+            metadata: metadata_parts.metadata,
+            decompressed_data,
+            game_data_offset: metadata_parts.game_data_offset,
+        })
     }
 
     pub fn parse_bytes_detailed(&mut self, bytes: &[u8]) -> Result<ParsedReplay> {
@@ -584,6 +653,10 @@ fn clone_metadata_without_game_data(metadata: &ReplayMetadata) -> ReplayMetadata
     }
 }
 
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
 impl Default for W3GReplay {
     fn default() -> Self {
         Self {
@@ -612,6 +685,28 @@ impl Default for W3GReplay {
 pub struct ParsedReplay {
     pub low_level: ReplayParserOutput,
     pub summary: ParserOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[doc(hidden)]
+pub struct PhasedParserOutput {
+    pub output: ParserOutput,
+    pub phases: ParsePhaseTimings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[doc(hidden)]
+pub struct ParsePhaseTimings {
+    pub raw_ms: f64,
+    pub decompress_ms: f64,
+    pub metadata_ms: f64,
+    pub setup_ms: f64,
+    pub game_data_ms: f64,
+    pub postprocess_ms: f64,
+    pub finalize_ms: f64,
+    pub total_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -890,6 +985,23 @@ mod tests {
         detailed_summary.parse_time = 0;
 
         assert_eq!(summary, detailed_summary);
+    }
+
+    #[test]
+    fn phased_parse_matches_normal_summary() {
+        let bytes = include_bytes!("../fixtures/replays/132/reforged1.w3g");
+        let mut summary_parser = W3GReplay::new();
+        let mut phased_parser = W3GReplay::new();
+        let mut summary = summary_parser.parse_bytes(bytes).unwrap();
+        let mut phased = phased_parser.parse_bytes_with_phases(bytes).unwrap();
+
+        summary.parse_time = 0;
+        phased.output.parse_time = 0;
+
+        assert_eq!(summary, phased.output);
+        assert!(phased.phases.total_ms > 0.0);
+        assert!(phased.phases.decompress_ms > 0.0);
+        assert!(phased.phases.game_data_ms > 0.0);
     }
 
     #[test]

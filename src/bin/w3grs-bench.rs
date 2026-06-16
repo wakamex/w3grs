@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use w3grs::W3GReplay;
+use serde::Serialize;
+use w3grs::{W3GReplay, replay::ParsePhaseTimings};
 
 fn main() {
     if let Err(error) = run() {
@@ -15,45 +16,115 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut args = env::args().skip(1);
-    let replay_path = args.next().ok_or_else(|| {
-        "usage: w3grs-bench <replay.w3g|replay.nwg> [iterations] [warmup]".to_string()
-    })?;
-    let iterations = parse_count(args.next(), 25, "iterations")?;
-    let warmup = parse_count(args.next(), 5, "warmup")?;
-    let bytes = std::fs::read(&replay_path)
-        .map_err(|error| format!("failed to read {replay_path}: {error}"))?;
+    let args = BenchArgs::parse()?;
+    let started = Instant::now();
+    let bytes = std::fs::read(&args.replay_path)
+        .map_err(|error| format!("failed to read {}: {error}", args.replay_path))?;
+    let read_file_ms = elapsed_ms(started);
     let mut parser = W3GReplay::new();
 
-    for _ in 0..warmup {
-        let output = parser
-            .parse_bytes(black_box(&bytes))
-            .map_err(|error| format!("warmup parse failed: {error}"))?;
-        black_box(output.players.len());
+    for _ in 0..args.warmup {
+        if args.phases {
+            let parsed = parser
+                .parse_bytes_with_phases(black_box(&bytes))
+                .map_err(|error| format!("warmup parse failed: {error}"))?;
+            black_box(parsed.output.players.len());
+            black_box(parsed.phases.total_ms);
+        } else {
+            let output = parser
+                .parse_bytes(black_box(&bytes))
+                .map_err(|error| format!("warmup parse failed: {error}"))?;
+            black_box(output.players.len());
+        }
     }
 
-    let mut samples = Vec::with_capacity(iterations);
+    let mut samples = Vec::with_capacity(args.iterations);
+    let mut phase_samples = Vec::with_capacity(args.iterations);
     let mut last_players = 0usize;
-    for _ in 0..iterations {
+    for _ in 0..args.iterations {
         let started = Instant::now();
-        let output = parser
-            .parse_bytes(black_box(&bytes))
-            .map_err(|error| format!("timed parse failed: {error}"))?;
-        let elapsed = started.elapsed();
-        last_players = output.players.len();
-        black_box(&output);
-        samples.push(elapsed);
+        if args.phases {
+            let parsed = parser
+                .parse_bytes_with_phases(black_box(&bytes))
+                .map_err(|error| format!("timed parse failed: {error}"))?;
+            let elapsed = started.elapsed();
+            last_players = parsed.output.players.len();
+            black_box(&parsed.output);
+            phase_samples.push(parsed.phases);
+            samples.push(elapsed);
+        } else {
+            let output = parser
+                .parse_bytes(black_box(&bytes))
+                .map_err(|error| format!("timed parse failed: {error}"))?;
+            let elapsed = started.elapsed();
+            last_players = output.players.len();
+            black_box(&output);
+            samples.push(elapsed);
+        }
     }
 
     let stats = Stats::from_samples(&samples);
+    let output = BenchOutput {
+        parser: "w3grs",
+        iterations: args.iterations,
+        warmup: args.warmup,
+        read_file_ms,
+        total_ms: stats.total_ms,
+        mean_ms: stats.mean_ms,
+        min_ms: stats.min_ms,
+        max_ms: stats.max_ms,
+        last_players,
+        phases: args
+            .phases
+            .then(|| PhaseStats::from_phase_samples(&phase_samples)),
+    };
     println!(
-        "{{\"parser\":\"w3grs\",\"iterations\":{iterations},\"warmup\":{warmup},\"totalMs\":{:.6},\"meanMs\":{:.6},\"minMs\":{:.6},\"maxMs\":{:.6},\"lastPlayers\":{last_players}}}",
-        stats.total_ms(),
-        stats.mean_ms(),
-        stats.min_ms(),
-        stats.max_ms(),
+        "{}",
+        serde_json::to_string(&output)
+            .map_err(|error| format!("failed to serialize benchmark output: {error}"))?
     );
     Ok(())
+}
+
+struct BenchArgs {
+    replay_path: String,
+    iterations: usize,
+    warmup: usize,
+    phases: bool,
+}
+
+impl BenchArgs {
+    fn parse() -> Result<Self, String> {
+        let mut positional = Vec::new();
+        let mut phases = false;
+
+        for arg in env::args().skip(1) {
+            match arg.as_str() {
+                "--phases" => phases = true,
+                "-h" | "--help" => {
+                    println!("{}", usage());
+                    process::exit(0);
+                }
+                _ if arg.starts_with('-') => return Err(format!("unknown argument: {arg}")),
+                _ => positional.push(arg),
+            }
+        }
+
+        let replay_path = positional
+            .first()
+            .cloned()
+            .ok_or_else(|| usage().to_string())?;
+        if positional.len() > 3 {
+            return Err(format!("too many positional arguments\n{}", usage()));
+        }
+
+        Ok(Self {
+            replay_path,
+            iterations: parse_count(positional.get(1).cloned(), 25, "iterations")?,
+            warmup: parse_count(positional.get(2).cloned(), 5, "warmup")?,
+            phases,
+        })
+    }
 }
 
 fn parse_count(value: Option<String>, default: usize, name: &str) -> Result<usize, String> {
@@ -72,44 +143,89 @@ fn parse_count(value: Option<String>, default: usize, name: &str) -> Result<usiz
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BenchOutput {
+    parser: &'static str,
+    iterations: usize,
+    warmup: usize,
+    read_file_ms: f64,
+    total_ms: f64,
+    mean_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+    last_players: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phases: Option<PhaseStats>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhaseStats {
+    raw: Stats,
+    decompress: Stats,
+    metadata: Stats,
+    setup: Stats,
+    game_data: Stats,
+    postprocess: Stats,
+    finalize: Stats,
+    total: Stats,
+}
+
+impl PhaseStats {
+    fn from_phase_samples(samples: &[ParsePhaseTimings]) -> Self {
+        Self {
+            raw: Stats::from_ms_samples(samples.iter().map(|sample| sample.raw_ms)),
+            decompress: Stats::from_ms_samples(samples.iter().map(|sample| sample.decompress_ms)),
+            metadata: Stats::from_ms_samples(samples.iter().map(|sample| sample.metadata_ms)),
+            setup: Stats::from_ms_samples(samples.iter().map(|sample| sample.setup_ms)),
+            game_data: Stats::from_ms_samples(samples.iter().map(|sample| sample.game_data_ms)),
+            postprocess: Stats::from_ms_samples(samples.iter().map(|sample| sample.postprocess_ms)),
+            finalize: Stats::from_ms_samples(samples.iter().map(|sample| sample.finalize_ms)),
+            total: Stats::from_ms_samples(samples.iter().map(|sample| sample.total_ms)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Stats {
-    total: Duration,
-    min: Duration,
-    max: Duration,
-    count: usize,
+    total_ms: f64,
+    mean_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
 }
 
 impl Stats {
     fn from_samples(samples: &[Duration]) -> Self {
-        let mut total = Duration::ZERO;
-        let mut min = Duration::MAX;
-        let mut max = Duration::ZERO;
+        Self::from_ms_samples(samples.iter().map(|sample| sample.as_secs_f64() * 1000.0))
+    }
+
+    fn from_ms_samples(samples: impl IntoIterator<Item = f64>) -> Self {
+        let mut total_ms = 0.0;
+        let mut min_ms = f64::INFINITY;
+        let mut max_ms = 0.0_f64;
+        let mut count = 0usize;
         for sample in samples {
-            total += *sample;
-            min = min.min(*sample);
-            max = max.max(*sample);
+            total_ms += sample;
+            min_ms = min_ms.min(sample);
+            max_ms = max_ms.max(sample);
+            count += 1;
         }
+
         Self {
-            total,
-            min,
-            max,
-            count: samples.len(),
+            total_ms,
+            mean_ms: total_ms / count as f64,
+            min_ms,
+            max_ms,
         }
     }
+}
 
-    fn total_ms(&self) -> f64 {
-        self.total.as_secs_f64() * 1000.0
-    }
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
 
-    fn mean_ms(&self) -> f64 {
-        self.total_ms() / self.count as f64
-    }
-
-    fn min_ms(&self) -> f64 {
-        self.min.as_secs_f64() * 1000.0
-    }
-
-    fn max_ms(&self) -> f64 {
-        self.max.as_secs_f64() * 1000.0
-    }
+fn usage() -> &'static str {
+    "usage: w3grs-bench <replay.w3g|replay.nwg> [iterations] [warmup] [--phases]"
 }
