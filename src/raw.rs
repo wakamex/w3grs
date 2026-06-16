@@ -167,34 +167,79 @@ where
     B: CompressedBlock,
 {
     let chunk_size = blocks.len().div_ceil(worker_count);
-    let mut chunks = Vec::with_capacity(worker_count);
+    let mut out = vec![0; capacity];
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
+        let mut remaining_out = out.as_mut_slice();
         for chunk in blocks.chunks(chunk_size) {
-            handles.push(scope.spawn(move || {
-                let capacity = chunk.iter().map(CompressedBlock::decompressed_size).sum();
-                get_uncompressed_data_sequential(chunk, capacity)
-            }));
+            let capacity = chunk.iter().map(CompressedBlock::decompressed_size).sum();
+            let (chunk_out, next_out) = remaining_out.split_at_mut(capacity);
+            remaining_out = next_out;
+
+            handles.push(scope.spawn(move || decode_blocks_to_slice(chunk, chunk_out)));
         }
 
         for handle in handles {
-            chunks.push(
-                handle
-                    .join()
-                    .map_err(|_| Error::Message("decompression worker panicked".to_string()))??,
-            );
+            handle
+                .join()
+                .map_err(|_| Error::Message("decompression worker panicked".to_string()))??;
         }
 
         Ok::<_, Error>(())
     })?;
 
-    let mut out = Vec::with_capacity(capacity);
-    for chunk in chunks {
-        out.extend(chunk);
+    Ok(out)
+}
+
+fn decode_blocks_to_slice<B>(blocks: &[B], out: &mut [u8]) -> Result<()>
+where
+    B: CompressedBlock,
+{
+    let mut offset: usize = 0;
+    for block in blocks {
+        let expected = block.decompressed_size();
+        let content = block.content();
+        if content.is_empty() {
+            if expected == 0 {
+                continue;
+            }
+            return Err(Error::Message(
+                "compressed block content is empty but declares output".to_string(),
+            ));
+        }
+
+        let end = offset
+            .checked_add(expected)
+            .ok_or_else(|| Error::Message("decompressed block offset overflow".to_string()))?;
+        let Some(output) = out.get_mut(offset..end) else {
+            return Err(Error::UnexpectedEof {
+                offset,
+                needed: expected,
+            });
+        };
+
+        let mut decoder = ZlibDecoder::new(content);
+        decoder.read_exact(output)?;
+
+        let mut extra = [0; 1];
+        if decoder.read(&mut extra)? != 0 {
+            return Err(Error::Message(
+                "decompressed block exceeded declared size".to_string(),
+            ));
+        }
+
+        offset = end;
     }
 
-    Ok(out)
+    if offset != out.len() {
+        return Err(Error::UnexpectedEof {
+            offset,
+            needed: out.len().saturating_sub(offset),
+        });
+    }
+
+    Ok(())
 }
 
 fn decode_block_to_vec<B>(block: &B, out: &mut Vec<u8>) -> Result<()>
