@@ -589,7 +589,7 @@ impl ActionParser {
     where
         V: SummaryActionVisitor,
     {
-        let mut parser = StatefulBufferParser::new(input);
+        let mut parser = SummaryActionCursor::new(input);
 
         while !parser.is_done() {
             let action_id = parser.read_u8()?;
@@ -618,7 +618,7 @@ impl ActionParser {
     where
         V: SummaryActionVisitor,
     {
-        let mut parser = StatefulBufferParser::new(input);
+        let mut parser = SummaryActionCursor::new(input);
 
         while !parser.is_done() {
             let action_id = parser.read_u8()?;
@@ -655,7 +655,7 @@ impl ActionParser {
 
     fn parse_summary_action(
         &mut self,
-        parser: &mut StatefulBufferParser<'_>,
+        parser: &mut SummaryActionCursor<'_>,
         action_id: u8,
         is_post_202_replay_format: bool,
         visitor: &mut impl SummaryActionVisitor,
@@ -673,8 +673,8 @@ impl ActionParser {
             }
             0x04 | 0x05 => false,
             0x06 => {
-                skip_zero_term_string(parser)?;
-                skip_zero_term_string(parser)?;
+                parser.skip_zero_term_string()?;
+                parser.skip_zero_term_string()?;
                 parser.skip(1)?;
                 false
             }
@@ -684,21 +684,21 @@ impl ActionParser {
             }
             0x10 => {
                 parser.skip(2)?;
-                let order_id = read_fourcc(parser)?;
+                let order_id = parser.read_fourcc()?;
                 parser.skip(8)?;
                 visitor.unit_building_ability_no_params(order_id)?;
                 true
             }
             0x11 => {
                 parser.skip(2)?;
-                let order_id = read_fourcc(parser)?;
+                let order_id = parser.read_fourcc()?;
                 parser.skip(16)?;
                 visitor.unit_building_ability_target_position(order_id)?;
                 true
             }
             0x12 => {
                 parser.skip(2)?;
-                let order_id = read_fourcc(parser)?;
+                let order_id = parser.read_fourcc()?;
                 parser.skip(24)?;
                 visitor.unit_building_ability_target_position_object(order_id)?;
                 true
@@ -710,7 +710,7 @@ impl ActionParser {
             }
             0x14 => {
                 parser.skip(2)?;
-                let order_id1 = read_fourcc(parser)?;
+                let order_id1 = parser.read_fourcc()?;
                 parser.skip(37)?;
                 visitor.unit_building_ability_two_target_positions(order_id1)?;
                 true
@@ -731,14 +731,14 @@ impl ActionParser {
             0x16 => {
                 let select_mode = parser.read_u8()?;
                 let number_units = parser.read_u16_le()?;
-                skip_selection_units(parser, number_units)?;
+                parser.skip_selection_units(number_units)?;
                 visitor.change_selection(select_mode)?;
                 true
             }
             0x17 => {
                 let group_number = parser.read_u8()?;
                 let number_units = parser.read_u16_le()?;
-                skip_selection_units(parser, number_units)?;
+                parser.skip_selection_units(number_units)?;
                 visitor.assign_group_hotkey(group_number)?;
                 true
             }
@@ -796,7 +796,7 @@ impl ActionParser {
             }
             0x60 => {
                 parser.skip(8)?;
-                skip_zero_term_string(parser)?;
+                parser.skip_zero_term_string()?;
                 false
             }
             0x61 => {
@@ -832,22 +832,22 @@ impl ActionParser {
                 false
             }
             0x6b | 0x6c => {
-                skip_cache_desc(parser)?;
+                parser.skip_cache_desc()?;
                 parser.skip(4)?;
                 false
             }
             0x6d => {
-                skip_cache_desc(parser)?;
+                parser.skip_cache_desc()?;
                 parser.skip(1)?;
                 false
             }
             0x6e => {
-                skip_cache_desc(parser)?;
-                skip_cache_unit(parser)?;
+                parser.skip_cache_desc()?;
+                parser.skip_cache_unit()?;
                 false
             }
             0x70..=0x73 => {
-                skip_cache_desc(parser)?;
+                parser.skip_cache_desc()?;
                 false
             }
             0x75 => {
@@ -861,18 +861,18 @@ impl ActionParser {
             0x77 => {
                 parser.skip(8)?;
                 let buff_len = parser.read_u32_le()? as usize;
-                skip_usize(parser, buff_len)?;
+                parser.skip(buff_len)?;
                 false
             }
             0x78 => {
-                skip_zero_term_string(parser)?;
-                skip_zero_term_string(parser)?;
+                parser.skip_zero_term_string()?;
+                parser.skip_zero_term_string()?;
                 parser.skip(4)?;
                 false
             }
             0x79 => {
                 parser.skip(16)?;
-                skip_zero_term_string(parser)?;
+                parser.skip_zero_term_string()?;
                 false
             }
             0x7a => {
@@ -1227,6 +1227,136 @@ impl ActionParser {
     }
 }
 
+struct SummaryActionCursor<'a> {
+    buffer: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SummaryActionCursor<'a> {
+    fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer, offset: 0 }
+    }
+
+    fn is_done(&self) -> bool {
+        self.offset >= self.buffer.len()
+    }
+
+    fn read_u8(&mut self) -> Result<u8> {
+        self.ensure(1)?;
+        let value = self.buffer[self.offset];
+        self.offset += 1;
+        Ok(value)
+    }
+
+    fn read_u16_le(&mut self) -> Result<u16> {
+        self.ensure(2)?;
+        let offset = self.offset;
+        self.offset += 2;
+        Ok(u16::from_le_bytes([
+            self.buffer[offset],
+            self.buffer[offset + 1],
+        ]))
+    }
+
+    fn read_u32_le(&mut self) -> Result<u32> {
+        self.ensure(4)?;
+        let offset = self.offset;
+        self.offset += 4;
+        Ok(u32::from_le_bytes([
+            self.buffer[offset],
+            self.buffer[offset + 1],
+            self.buffer[offset + 2],
+            self.buffer[offset + 3],
+        ]))
+    }
+
+    fn read_fourcc(&mut self) -> Result<FourCC> {
+        self.ensure(4)?;
+        let offset = self.offset;
+        self.offset += 4;
+        Ok([
+            self.buffer[offset],
+            self.buffer[offset + 1],
+            self.buffer[offset + 2],
+            self.buffer[offset + 3],
+        ])
+    }
+
+    fn skip(&mut self, byte_count: usize) -> Result<()> {
+        self.ensure(byte_count)?;
+        self.offset += byte_count;
+        Ok(())
+    }
+
+    fn skip_selection_units(&mut self, length: u16) -> Result<()> {
+        self.skip(usize::from(length) * 8)
+    }
+
+    fn skip_zero_term_string(&mut self) -> Result<()> {
+        let start = self.offset;
+        let remaining = &self.buffer[start..];
+        let length = remaining
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(Error::UnexpectedEof {
+                offset: start,
+                needed: 1,
+            })?;
+        self.skip(length + 1)
+    }
+
+    fn skip_cache_desc(&mut self) -> Result<()> {
+        self.skip_zero_term_string()?;
+        self.skip_zero_term_string()?;
+        self.skip_zero_term_string()
+    }
+
+    fn skip_cache_unit(&mut self) -> Result<()> {
+        self.skip(4)?;
+        let items_count = self.read_u32_le()?;
+        let items_count = usize::try_from(items_count)
+            .map_err(|_| Error::Message("cache item count overflow".to_string()))?;
+        for _ in 0..items_count {
+            self.skip(12)?;
+        }
+        self.skip_cache_hero_data()
+    }
+
+    fn skip_cache_hero_data(&mut self) -> Result<()> {
+        self.skip(48)?;
+        let hero_abil_count = self.read_u32_le()?;
+        let hero_abil_count = usize::try_from(hero_abil_count)
+            .map_err(|_| Error::Message("hero ability count overflow".to_string()))?;
+        for _ in 0..hero_abil_count {
+            self.skip(8)?;
+        }
+        self.skip(12)?;
+        let damage_count = self.read_u32_le()?;
+        let damage_byte_count = usize::try_from(damage_count)
+            .ok()
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| Error::Message("damage count overflow".to_string()))?;
+        self.skip(damage_byte_count)?;
+        self.skip(6)
+    }
+
+    fn ensure(&self, needed: usize) -> Result<()> {
+        let Some(end) = self.offset.checked_add(needed) else {
+            return Err(Error::UnexpectedEof {
+                offset: self.offset,
+                needed,
+            });
+        };
+        if end > self.buffer.len() {
+            return Err(Error::UnexpectedEof {
+                offset: self.offset,
+                needed,
+            });
+        }
+        Ok(())
+    }
+}
+
 fn normalize_action_id(action_id: u8, is_post_202_replay_format: bool) -> u8 {
     if is_post_202_replay_format && action_id > 0x77 {
         action_id.saturating_add(1)
@@ -1241,29 +1371,6 @@ fn read_selection_units(parser: &mut StatefulBufferParser<'_>, length: u16) -> R
         units.push(read_net_tag(parser)?);
     }
     Ok(units)
-}
-
-fn skip_selection_units(parser: &mut StatefulBufferParser<'_>, length: u16) -> Result<()> {
-    parser.skip(isize::try_from(usize::from(length) * 8).expect("u16 * 8 fits in isize"))
-}
-
-fn skip_usize(parser: &mut StatefulBufferParser<'_>, byte_count: usize) -> Result<()> {
-    let byte_count = isize::try_from(byte_count)
-        .map_err(|_| Error::Message("skip length overflow".to_string()))?;
-    parser.skip(byte_count)
-}
-
-fn skip_zero_term_string(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    let start = parser.offset();
-    let remaining = &parser.buffer()[start..];
-    let length = remaining
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or(Error::UnexpectedEof {
-            offset: start,
-            needed: 1,
-        })?;
-    skip_usize(parser, length + 1)
 }
 
 fn read_fourcc(parser: &mut StatefulBufferParser<'_>) -> Result<FourCC> {
@@ -1286,12 +1393,6 @@ fn read_cache_desc(parser: &mut StatefulBufferParser<'_>) -> Result<Cache> {
     })
 }
 
-fn skip_cache_desc(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    skip_zero_term_string(parser)?;
-    skip_zero_term_string(parser)?;
-    skip_zero_term_string(parser)
-}
-
 fn read_cache_item(parser: &mut StatefulBufferParser<'_>) -> Result<Item> {
     let item_id = read_fourcc(parser)?;
     let charges = parser.read_u32_le()?;
@@ -1307,14 +1408,6 @@ fn read_ability(parser: &mut StatefulBufferParser<'_>) -> Result<Ability> {
     let id = read_fourcc(parser)?;
     let level = parser.read_u32_le()?;
     Ok(Ability { id, level })
-}
-
-fn skip_cache_item(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    parser.skip(12)
-}
-
-fn skip_cache_ability(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    parser.skip(8)
 }
 
 fn read_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<HeroData> {
@@ -1369,24 +1462,6 @@ fn read_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<HeroDat
     })
 }
 
-fn skip_cache_hero_data(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    parser.skip(48)?;
-    let hero_abil_count = parser.read_u32_le()?;
-    let hero_abil_count = usize::try_from(hero_abil_count)
-        .map_err(|_| Error::Message("hero ability count overflow".to_string()))?;
-    for _ in 0..hero_abil_count {
-        skip_cache_ability(parser)?;
-    }
-    parser.skip(12)?;
-    let damage_count = parser.read_u32_le()?;
-    let damage_byte_count = usize::try_from(damage_count)
-        .ok()
-        .and_then(|count| count.checked_mul(4))
-        .ok_or_else(|| Error::Message("damage count overflow".to_string()))?;
-    skip_usize(parser, damage_byte_count)?;
-    parser.skip(6)
-}
-
 fn read_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<Unit> {
     let unit_id = read_fourcc(parser)?;
     let items_count = parser.read_u32_le()?;
@@ -1400,17 +1475,6 @@ fn read_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<Unit> {
         items,
         hero_data,
     })
-}
-
-fn skip_cache_unit(parser: &mut StatefulBufferParser<'_>) -> Result<()> {
-    parser.skip(4)?;
-    let items_count = parser.read_u32_le()?;
-    let items_count = usize::try_from(items_count)
-        .map_err(|_| Error::Message("cache item count overflow".to_string()))?;
-    for _ in 0..items_count {
-        skip_cache_item(parser)?;
-    }
-    skip_cache_hero_data(parser)
 }
 
 fn read_net_tag(parser: &mut StatefulBufferParser<'_>) -> Result<NetTag> {
