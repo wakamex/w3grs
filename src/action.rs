@@ -181,6 +181,17 @@ pub enum Action {
         text: String,
     },
     #[cfg(feature = "extended-actions")]
+    ChangeAllyOptions {
+        slot: u8,
+        flags: u32,
+    },
+    #[cfg(feature = "extended-actions")]
+    TriggerChatCommand {
+        a: u32,
+        b: u32,
+        text: String,
+    },
+    #[cfg(feature = "extended-actions")]
     CommandCardSource {
         source_unit_tag: NetTag,
         ability_id: FourCC,
@@ -235,6 +246,10 @@ impl Action {
             Action::W3Api { .. } => 0x77,
             Action::BlzSync { .. } => 0x78,
             Action::CommandFrame { .. } => 0x79,
+            #[cfg(feature = "extended-actions")]
+            Action::ChangeAllyOptions { .. } => 0x50,
+            #[cfg(feature = "extended-actions")]
+            Action::TriggerChatCommand { .. } => 0x60,
             #[cfg(feature = "extended-actions")]
             Action::CommandCardSource {
                 normalized_opcode, ..
@@ -485,6 +500,17 @@ impl Serialize for Action {
                 map.serialize_entry("text", text)?;
             }
             #[cfg(feature = "extended-actions")]
+            Action::ChangeAllyOptions { slot, flags } => {
+                map.serialize_entry("slot", slot)?;
+                map.serialize_entry("flags", flags)?;
+            }
+            #[cfg(feature = "extended-actions")]
+            Action::TriggerChatCommand { a, b, text } => {
+                map.serialize_entry("a", a)?;
+                map.serialize_entry("b", b)?;
+                map.serialize_entry("text", text)?;
+            }
+            #[cfg(feature = "extended-actions")]
             Action::CommandCardSource {
                 source_unit_tag,
                 ability_id,
@@ -571,33 +597,6 @@ fn parse_fixed_opaque_or_skip(
     {
         let _ = (raw_opcode, normalized_opcode);
         parser.skip(payload_len as isize)?;
-        Ok(None)
-    }
-}
-
-fn parse_zero_term_opaque_or_skip(
-    parser: &mut StatefulBufferParser<'_>,
-    raw_opcode: u8,
-    normalized_opcode: u8,
-    prefix_len: usize,
-) -> Result<Option<Action>> {
-    #[cfg(feature = "extended-actions")]
-    {
-        let start = parser.offset();
-        parser.skip(prefix_len as isize)?;
-        let _ = parser.read_zero_term_string()?;
-        let payload = parser.buffer()[start..parser.offset()].to_vec();
-        Ok(Some(opaque_dropped_action(
-            raw_opcode,
-            normalized_opcode,
-            payload,
-        )))
-    }
-    #[cfg(not(feature = "extended-actions"))]
-    {
-        let _ = (raw_opcode, normalized_opcode);
-        parser.skip(prefix_len as isize)?;
-        let _ = parser.read_zero_term_string()?;
         Ok(None)
     }
 }
@@ -1208,14 +1207,42 @@ impl ActionParser {
                 None
             }
             0x2f => None,
-            0x50 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 5)?,
+            0x50 => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    Some(Action::ChangeAllyOptions {
+                        slot: parser.read_u8()?,
+                        flags: parser.read_u32_le()?,
+                    })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(5)?;
+                    None
+                }
+            }
             0x51 => {
                 let slot = parser.read_u8()?;
                 let gold = parser.read_u32_le()?;
                 let lumber = parser.read_u32_le()?;
                 Some(Action::TransferResources { slot, gold, lumber })
             }
-            0x60 => parse_zero_term_opaque_or_skip(parser, raw_action_id, action_id, 8)?,
+            0x60 => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    Some(Action::TriggerChatCommand {
+                        a: parser.read_u32_le()?,
+                        b: parser.read_u32_le()?,
+                        text: parser.read_zero_term_string()?,
+                    })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(8)?;
+                    let _ = parser.read_zero_term_string()?;
+                    None
+                }
+            }
             0x61 => Some(Action::EscPressed),
             0x62 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 12)?,
             0x63 => {
@@ -1653,6 +1680,19 @@ mod tests {
         assert!(actions.is_empty());
     }
 
+    #[test]
+    #[cfg(not(feature = "extended-actions"))]
+    fn drops_named_extended_actions_by_default() {
+        let input = [
+            0x50, 0x03, 0x44, 0x33, 0x22, 0x11, 0x60, 0x88, 0x77, 0x66, 0x55, 0xcc, 0xbb, 0xaa,
+            0x99, b'h', b'i', 0,
+        ];
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert!(actions.is_empty());
+    }
+
     #[cfg(feature = "extended-actions")]
     fn assert_opaque_action(
         action: &Action,
@@ -1680,8 +1720,6 @@ mod tests {
     fn emits_opaque_dropped_actions_when_extended_actions_are_enabled() {
         let mut input = Vec::new();
         input.push(0x02);
-        input.extend([0x50, 1, 2, 3, 4, 5]);
-        input.extend([0x60, 10, 11, 12, 13, 14, 15, 16, 17, b'h', b'i', 0]);
         let payload_62: Vec<_> = (20u8..=31).collect();
         let payload_69: Vec<_> = (40u8..=55).collect();
         let payload_6a: Vec<_> = (60u8..=75).collect();
@@ -1697,25 +1735,64 @@ mod tests {
 
         let actions = ActionParser::new().parse(&input, false).unwrap();
 
-        assert_eq!(actions.len(), 7);
+        assert_eq!(actions.len(), 5);
         assert_opaque_action(&actions[0], 0x02, 0x02, &[]);
-        assert_opaque_action(&actions[1], 0x50, 0x50, &[1, 2, 3, 4, 5]);
-        assert_opaque_action(
-            &actions[2],
-            0x60,
-            0x60,
-            &[10, 11, 12, 13, 14, 15, 16, 17, b'h', b'i', 0],
-        );
-        assert_opaque_action(&actions[3], 0x62, 0x62, &payload_62);
-        assert_opaque_action(&actions[4], 0x69, 0x69, &payload_69);
-        assert_opaque_action(&actions[5], 0x6a, 0x6a, &payload_6a);
-        assert_opaque_action(&actions[6], 0x7a, 0x7a, &payload_7a);
+        assert_opaque_action(&actions[1], 0x62, 0x62, &payload_62);
+        assert_opaque_action(&actions[2], 0x69, 0x69, &payload_69);
+        assert_opaque_action(&actions[3], 0x6a, 0x6a, &payload_6a);
+        assert_opaque_action(&actions[4], 0x7a, 0x7a, &payload_7a);
 
         let json = serde_json::to_value(&actions[1]).unwrap();
+        assert_eq!(json["id"], 0x62);
+        assert_eq!(json["rawOpcode"], 0x62);
+        assert_eq!(json["normalizedOpcode"], 0x62);
+        assert_eq!(json["payload"], serde_json::json!(payload_62));
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_change_ally_options_when_extended_actions_are_enabled() {
+        let input = [0x50, 0x03, 0x44, 0x33, 0x22, 0x11];
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        let Action::ChangeAllyOptions { slot, flags } = &actions[0] else {
+            panic!("expected change ally options action");
+        };
+        assert_eq!(*slot, 3);
+        assert_eq!(*flags, 0x11223344);
+        assert_eq!(actions[0].id(), 0x50);
+
+        let json = serde_json::to_value(&actions[0]).unwrap();
         assert_eq!(json["id"], 0x50);
-        assert_eq!(json["rawOpcode"], 0x50);
-        assert_eq!(json["normalizedOpcode"], 0x50);
-        assert_eq!(json["payload"], serde_json::json!([1, 2, 3, 4, 5]));
+        assert_eq!(json["slot"], 3);
+        assert_eq!(json["flags"], 0x11223344);
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_trigger_chat_command_when_extended_actions_are_enabled() {
+        let input = [
+            0x60, 0x88, 0x77, 0x66, 0x55, 0xcc, 0xbb, 0xaa, 0x99, b'h', b'i', 0,
+        ];
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        let Action::TriggerChatCommand { a, b, text } = &actions[0] else {
+            panic!("expected trigger chat command action");
+        };
+        assert_eq!(*a, 0x55667788);
+        assert_eq!(*b, 0x99aabbcc);
+        assert_eq!(text, "hi");
+        assert_eq!(actions[0].id(), 0x60);
+
+        let json = serde_json::to_value(&actions[0]).unwrap();
+        assert_eq!(json["id"], 0x60);
+        assert_eq!(json["a"], serde_json::json!(0x55667788u32));
+        assert_eq!(json["b"], serde_json::json!(0x99aabbccu32));
+        assert_eq!(json["text"], "hi");
     }
 
     #[test]
