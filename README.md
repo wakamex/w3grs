@@ -92,11 +92,13 @@ also emits additional actions that `w3gjs` drops:
   `order_id`, `raw_opcode`, and `normalized_opcode` so downstream simulators can
   attribute command-card orders to the producing unit.
 - `Action::ChangeAllyOptions` for normalized action id `0x50`.
-- `Action::TriggerChatCommand` for normalized action id `0x60`.
-- `Action::OpaqueDroppedAction` for normalized ids `0x02`, `0x62`, `0x69`,
-  `0x6a`, and `0x7a`. This preserves `raw_opcode`, `normalized_opcode`, and
-  exact payload bytes for downstream inspection while their semantics are still
-  unknown.
+- `Action::MapTriggerChatCommand` for normalized action id `0x60`.
+- `Action::ScenarioTrigger` for normalized action id `0x62`.
+- `Action::ContinueGameBlockB` and `Action::ContinueGameBlockA` for normalized
+  action ids `0x69` and `0x6a`.
+- `Action::OpaqueDroppedAction` for normalized ids `0x02` and `0x7a`. This
+  preserves `raw_opcode`, `normalized_opcode`, and exact payload bytes for
+  downstream inspection while their semantics are still unknown.
 
 The feature is disabled by default because these actions intentionally diverge
 from `w3gjs` output.

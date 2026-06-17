@@ -186,10 +186,30 @@ pub enum Action {
         flags: u32,
     },
     #[cfg(feature = "extended-actions")]
-    TriggerChatCommand {
+    MapTriggerChatCommand {
+        unknown_a: u32,
+        unknown_b: u32,
+        command: String,
+    },
+    #[cfg(feature = "extended-actions")]
+    ScenarioTrigger {
+        unknown_a: u32,
+        unknown_b: u32,
+        counter: u32,
+    },
+    #[cfg(feature = "extended-actions")]
+    ContinueGameBlockB {
         a: u32,
         b: u32,
-        text: String,
+        c: u32,
+        d: u32,
+    },
+    #[cfg(feature = "extended-actions")]
+    ContinueGameBlockA {
+        a: u32,
+        b: u32,
+        c: u32,
+        d: u32,
     },
     #[cfg(feature = "extended-actions")]
     CommandCardSource {
@@ -249,7 +269,13 @@ impl Action {
             #[cfg(feature = "extended-actions")]
             Action::ChangeAllyOptions { .. } => 0x50,
             #[cfg(feature = "extended-actions")]
-            Action::TriggerChatCommand { .. } => 0x60,
+            Action::MapTriggerChatCommand { .. } => 0x60,
+            #[cfg(feature = "extended-actions")]
+            Action::ScenarioTrigger { .. } => 0x62,
+            #[cfg(feature = "extended-actions")]
+            Action::ContinueGameBlockB { .. } => 0x69,
+            #[cfg(feature = "extended-actions")]
+            Action::ContinueGameBlockA { .. } => 0x6a,
             #[cfg(feature = "extended-actions")]
             Action::CommandCardSource {
                 normalized_opcode, ..
@@ -505,10 +531,32 @@ impl Serialize for Action {
                 map.serialize_entry("flags", flags)?;
             }
             #[cfg(feature = "extended-actions")]
-            Action::TriggerChatCommand { a, b, text } => {
+            Action::MapTriggerChatCommand {
+                unknown_a,
+                unknown_b,
+                command,
+            } => {
+                map.serialize_entry("unknownA", unknown_a)?;
+                map.serialize_entry("unknownB", unknown_b)?;
+                map.serialize_entry("command", command)?;
+            }
+            #[cfg(feature = "extended-actions")]
+            Action::ScenarioTrigger {
+                unknown_a,
+                unknown_b,
+                counter,
+            } => {
+                map.serialize_entry("unknownA", unknown_a)?;
+                map.serialize_entry("unknownB", unknown_b)?;
+                map.serialize_entry("counter", counter)?;
+            }
+            #[cfg(feature = "extended-actions")]
+            Action::ContinueGameBlockB { a, b, c, d }
+            | Action::ContinueGameBlockA { a, b, c, d } => {
                 map.serialize_entry("a", a)?;
                 map.serialize_entry("b", b)?;
-                map.serialize_entry("text", text)?;
+                map.serialize_entry("c", c)?;
+                map.serialize_entry("d", d)?;
             }
             #[cfg(feature = "extended-actions")]
             Action::CommandCardSource {
@@ -1230,10 +1278,10 @@ impl ActionParser {
             0x60 => {
                 #[cfg(feature = "extended-actions")]
                 {
-                    Some(Action::TriggerChatCommand {
-                        a: parser.read_u32_le()?,
-                        b: parser.read_u32_le()?,
-                        text: parser.read_zero_term_string()?,
+                    Some(Action::MapTriggerChatCommand {
+                        unknown_a: parser.read_u32_le()?,
+                        unknown_b: parser.read_u32_le()?,
+                        command: parser.read_zero_term_string()?,
                     })
                 }
                 #[cfg(not(feature = "extended-actions"))]
@@ -1244,7 +1292,21 @@ impl ActionParser {
                 }
             }
             0x61 => Some(Action::EscPressed),
-            0x62 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 12)?,
+            0x62 => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    Some(Action::ScenarioTrigger {
+                        unknown_a: parser.read_u32_le()?,
+                        unknown_b: parser.read_u32_le()?,
+                        counter: parser.read_u32_le()?,
+                    })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(12)?;
+                    None
+                }
+            }
             0x63 => {
                 parser.skip(8)?;
                 None
@@ -1262,7 +1324,37 @@ impl ActionParser {
                 let duration = parser.read_f32_le()?;
                 Some(Action::AllyPing { pos, duration })
             }
-            0x69 | 0x6a => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 16)?,
+            0x69 => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    let c = parser.read_u32_le()?;
+                    let d = parser.read_u32_le()?;
+                    let a = parser.read_u32_le()?;
+                    let b = parser.read_u32_le()?;
+                    Some(Action::ContinueGameBlockB { a, b, c, d })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(16)?;
+                    None
+                }
+            }
+            0x6a => {
+                #[cfg(feature = "extended-actions")]
+                {
+                    Some(Action::ContinueGameBlockA {
+                        a: parser.read_u32_le()?,
+                        b: parser.read_u32_le()?,
+                        c: parser.read_u32_le()?,
+                        d: parser.read_u32_le()?,
+                    })
+                }
+                #[cfg(not(feature = "extended-actions"))]
+                {
+                    parser.skip(16)?;
+                    None
+                }
+            }
             0x6b => {
                 let cache = read_cache_desc(parser)?;
                 let value = parser.read_u32_le()?;
@@ -1720,33 +1812,21 @@ mod tests {
     fn emits_opaque_dropped_actions_when_extended_actions_are_enabled() {
         let mut input = Vec::new();
         input.push(0x02);
-        let payload_62: Vec<_> = (20u8..=31).collect();
-        let payload_69: Vec<_> = (40u8..=55).collect();
-        let payload_6a: Vec<_> = (60u8..=75).collect();
         let payload_7a: Vec<_> = (80u8..=99).collect();
-        input.push(0x62);
-        input.extend_from_slice(&payload_62);
-        input.push(0x69);
-        input.extend_from_slice(&payload_69);
-        input.push(0x6a);
-        input.extend_from_slice(&payload_6a);
         input.push(0x7a);
         input.extend_from_slice(&payload_7a);
 
         let actions = ActionParser::new().parse(&input, false).unwrap();
 
-        assert_eq!(actions.len(), 5);
+        assert_eq!(actions.len(), 2);
         assert_opaque_action(&actions[0], 0x02, 0x02, &[]);
-        assert_opaque_action(&actions[1], 0x62, 0x62, &payload_62);
-        assert_opaque_action(&actions[2], 0x69, 0x69, &payload_69);
-        assert_opaque_action(&actions[3], 0x6a, 0x6a, &payload_6a);
-        assert_opaque_action(&actions[4], 0x7a, 0x7a, &payload_7a);
+        assert_opaque_action(&actions[1], 0x7a, 0x7a, &payload_7a);
 
         let json = serde_json::to_value(&actions[1]).unwrap();
-        assert_eq!(json["id"], 0x62);
-        assert_eq!(json["rawOpcode"], 0x62);
-        assert_eq!(json["normalizedOpcode"], 0x62);
-        assert_eq!(json["payload"], serde_json::json!(payload_62));
+        assert_eq!(json["id"], 0x7a);
+        assert_eq!(json["rawOpcode"], 0x7a);
+        assert_eq!(json["normalizedOpcode"], 0x7a);
+        assert_eq!(json["payload"], serde_json::json!(payload_7a));
     }
 
     #[test]
@@ -1772,7 +1852,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "extended-actions")]
-    fn emits_trigger_chat_command_when_extended_actions_are_enabled() {
+    fn emits_map_trigger_chat_command_when_extended_actions_are_enabled() {
         let input = [
             0x60, 0x88, 0x77, 0x66, 0x55, 0xcc, 0xbb, 0xaa, 0x99, b'h', b'i', 0,
         ];
@@ -1780,19 +1860,99 @@ mod tests {
         let actions = ActionParser::new().parse(&input, false).unwrap();
 
         assert_eq!(actions.len(), 1);
-        let Action::TriggerChatCommand { a, b, text } = &actions[0] else {
-            panic!("expected trigger chat command action");
+        let Action::MapTriggerChatCommand {
+            unknown_a,
+            unknown_b,
+            command,
+        } = &actions[0]
+        else {
+            panic!("expected map trigger chat command action");
         };
-        assert_eq!(*a, 0x55667788);
-        assert_eq!(*b, 0x99aabbcc);
-        assert_eq!(text, "hi");
+        assert_eq!(*unknown_a, 0x55667788);
+        assert_eq!(*unknown_b, 0x99aabbcc);
+        assert_eq!(command, "hi");
         assert_eq!(actions[0].id(), 0x60);
 
         let json = serde_json::to_value(&actions[0]).unwrap();
         assert_eq!(json["id"], 0x60);
-        assert_eq!(json["a"], serde_json::json!(0x55667788u32));
-        assert_eq!(json["b"], serde_json::json!(0x99aabbccu32));
-        assert_eq!(json["text"], "hi");
+        assert_eq!(json["unknownA"], serde_json::json!(0x55667788u32));
+        assert_eq!(json["unknownB"], serde_json::json!(0x99aabbccu32));
+        assert_eq!(json["command"], "hi");
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_scenario_trigger_when_extended_actions_are_enabled() {
+        let input = [
+            0x62, 0x04, 0x03, 0x02, 0x01, 0x08, 0x07, 0x06, 0x05, 0x0c, 0x0b, 0x0a, 0x09,
+        ];
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        let Action::ScenarioTrigger {
+            unknown_a,
+            unknown_b,
+            counter,
+        } = &actions[0]
+        else {
+            panic!("expected scenario trigger action");
+        };
+        assert_eq!(*unknown_a, 0x01020304);
+        assert_eq!(*unknown_b, 0x05060708);
+        assert_eq!(*counter, 0x090a0b0c);
+        assert_eq!(actions[0].id(), 0x62);
+
+        let json = serde_json::to_value(&actions[0]).unwrap();
+        assert_eq!(json["id"], 0x62);
+        assert_eq!(json["unknownA"], serde_json::json!(0x01020304u32));
+        assert_eq!(json["unknownB"], serde_json::json!(0x05060708u32));
+        assert_eq!(json["counter"], serde_json::json!(0x090a0b0cu32));
+    }
+
+    #[test]
+    #[cfg(feature = "extended-actions")]
+    fn emits_continue_game_blocks_when_extended_actions_are_enabled() {
+        let input = [
+            0x6a, 0x04, 0x03, 0x02, 0x01, 0x08, 0x07, 0x06, 0x05, 0x0c, 0x0b, 0x0a, 0x09, 0x10,
+            0x0f, 0x0e, 0x0d, 0x69, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55, 0xcc, 0xbb,
+            0xaa, 0x99, 0x00, 0xff, 0xee, 0xdd,
+        ];
+
+        let actions = ActionParser::new().parse(&input, false).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        let Action::ContinueGameBlockA { a, b, c, d } = &actions[0] else {
+            panic!("expected continue game block A");
+        };
+        assert_eq!(
+            (*a, *b, *c, *d),
+            (0x01020304, 0x05060708, 0x090a0b0c, 0x0d0e0f10)
+        );
+        assert_eq!(actions[0].id(), 0x6a);
+
+        let Action::ContinueGameBlockB { a, b, c, d } = &actions[1] else {
+            panic!("expected continue game block B");
+        };
+        assert_eq!(
+            (*a, *b, *c, *d),
+            (0x99aabbcc, 0xddeeff00, 0x11223344, 0x55667788)
+        );
+        assert_eq!(actions[1].id(), 0x69);
+
+        let block_a_json = serde_json::to_value(&actions[0]).unwrap();
+        assert_eq!(block_a_json["id"], 0x6a);
+        assert_eq!(block_a_json["a"], serde_json::json!(0x01020304u32));
+        assert_eq!(block_a_json["b"], serde_json::json!(0x05060708u32));
+        assert_eq!(block_a_json["c"], serde_json::json!(0x090a0b0cu32));
+        assert_eq!(block_a_json["d"], serde_json::json!(0x0d0e0f10u32));
+
+        let block_b_json = serde_json::to_value(&actions[1]).unwrap();
+        assert_eq!(block_b_json["id"], 0x69);
+        assert_eq!(block_b_json["a"], serde_json::json!(0x99aabbccu32));
+        assert_eq!(block_b_json["b"], serde_json::json!(0xddeeff00u32));
+        assert_eq!(block_b_json["c"], serde_json::json!(0x11223344u32));
+        assert_eq!(block_b_json["d"], serde_json::json!(0x55667788u32));
     }
 
     #[test]
