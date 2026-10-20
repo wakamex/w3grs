@@ -128,7 +128,7 @@ fn cache_unit(slice: &[u8], off: &mut usize) -> bool {
 }
 
 fn normalize(id: u8, post202: bool) -> u8 {
-    if post202 && id > 0x77 {
+    if post202 && id >= 0x77 {
         id.saturating_add(1)
     } else {
         id

@@ -1595,7 +1595,7 @@ impl<'a> SummaryActionCursor<'a> {
 }
 
 fn normalize_action_id(action_id: u8, is_post_202_replay_format: bool) -> u8 {
-    if is_post_202_replay_format && action_id > 0x77 {
+    if is_post_202_replay_format && action_id >= 0x77 {
         action_id.saturating_add(1)
     } else {
         action_id
@@ -1757,6 +1757,31 @@ mod tests {
         assert_eq!(format_net_tag([1, 2]), "n:1:2");
         assert_eq!(format_optional_net_tag([1, 2]), Some("n:1:2".to_string()));
         assert_eq!(format_optional_net_tag([u32::MAX, u32::MAX]), None);
+    }
+
+    /// Post-2.0.2 replays send BlzSendSyncData as action 0x77 (two zero-terminated strings and
+    /// four bytes); read with the older W3Api layout, its first bytes became a length and the
+    /// rest of the block was lost. Bytes from W3Champions replay 6ad68f3455f8999c0bb5de82, player 2
+    /// at 331 ms: the sync data and the smart order on the mine that follows it.
+    #[test]
+    fn parses_post_202_sync_data_and_the_action_after_it() {
+        let mut input = vec![0x77, b'T', 0];
+        input.extend_from_slice(b"AAE==QW2mAA==\0");
+        input.extend_from_slice(&[0, 0, 0, 0]);
+        input.extend_from_slice(&[
+            0x12, 0x18, 0x00, 0x03, 0x00, 0x0d, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0x00, 0x00, 0xea, 0x45, 0x00, 0x00, 0x6c, 0x45, 0x11, 0x33, 0x00, 0x00, 0xd9,
+            0x40, 0x00, 0x00,
+        ]);
+
+        let actions = ActionParser::new().parse(&input, true).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(
+            &actions[0],
+            Action::BlzSync { identifier, value } if identifier == "T" && value == "AAE==QW2mAA=="
+        ));
+        assert_eq!(actions[1].id(), 0x12);
     }
 
     #[test]

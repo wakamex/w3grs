@@ -30,7 +30,12 @@ The table mixes two cases:
   payloads.
 
 Action ids are normalized with the same rule as the parser: for post-2.0.2
-replays, raw action ids greater than `0x77` are shifted up by one.
+replays, raw action ids from `0x77` up are shifted up by one. Raw `0x77` in those
+replays is `BlzSync` (the client's `BlzSendSyncData` writes `[0x77][prefix\0][data\0]`,
+see `action-layouts.md`); `W3Api` exists only in older replays. Read as `W3Api`, a
+post-2.0.2 sync action's string bytes became a buffer length and the rest of its
+command block was lost. The table below was measured with the older rule; with this one the
+probe reads 478,560 of 478,581 blocks to their exact end (21 truncated, from 33).
 
 Unknown-player command blocks are also skipped by the high-level parser before
 decoding individual actions. Those bytes cannot honestly be attributed to
