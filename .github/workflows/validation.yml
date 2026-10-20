@@ -1,0 +1,19 @@
+name: Validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The upstream w3gjs replays the fixture tests parse.
+          submodules: true
+      - run: cargo test --locked
+      - run: cargo publish --dry-run --locked

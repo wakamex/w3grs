@@ -15,7 +15,10 @@ include = [
     "/LICENSE",
     "/README.md",
     "/src/*.rs",
-    "/src/bin/*.rs",
+    "/src/bin/w3grs-action-probe.rs",
+    "/src/bin/w3grs-bench.rs",
+    "/src/bin/w3grs-compare-one.rs",
+    "/src/bin/w3grs-nettag-order.rs",
     "/fixtures/replays/**/*",
     "/tests/*.rs",
 ]
