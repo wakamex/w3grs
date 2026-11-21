@@ -26,8 +26,8 @@ The table mixes two cases:
   `CommandFrame`.
 - Summary-dropped actions that are not exposed by default. With
   `extended-actions`, ids `0x50`, `0x60`, `0x62`, `0x69`, `0x6a`, and `0x7b`
-  are decoded as named variants; ids `0x02` and `0x7a` are emitted as opaque
-  payloads.
+  are decoded as named variants; ids `0x01` (pause), `0x02` (resume) and `0x7a` are
+  emitted as opaque payloads.
 
 Action ids are normalized with the same rule as the parser: for post-2.0.2
 replays, raw action ids from `0x77` up are shifted up by one. Raw `0x77` in those
@@ -88,6 +88,10 @@ here so the corpus totals reconcile.
 |---:|---|---:|---:|
 | `0x01` | 0x01 | 21 | 21 |
 | `0x77` | 0x77 | 12 | 14 |
+
+The `0x01` starts were counted while the parser skipped a byte after a pause.
+A pause carries no payload, so each of them ended its command block; the
+parser now reads none and classifies them as dropped.
 
 ## Per-Replay Counts
 

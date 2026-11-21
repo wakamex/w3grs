@@ -815,11 +815,7 @@ impl ActionParser {
     ) -> Result<bool> {
         let action_id = normalize_action_id(action_id, is_post_202_replay_format);
         let result = match action_id {
-            0x01 => {
-                parser.skip(1)?;
-                false
-            }
-            0x02 => false,
+            0x01 | 0x02 => false,
             0x03 => {
                 parser.skip(1)?;
                 false
@@ -1061,10 +1057,7 @@ impl ActionParser {
         let _ = raw_action_id;
 
         let result = match action_id {
-            0x01 => {
-                parser.skip(1)?;
-                None
-            }
+            0x01 => parse_fixed_opaque_or_skip(parser, raw_action_id, action_id, 0)?,
             0x02 => {
                 #[cfg(feature = "extended-actions")]
                 {
@@ -1835,19 +1828,19 @@ mod tests {
     #[test]
     #[cfg(feature = "extended-actions")]
     fn emits_opaque_dropped_actions_when_extended_actions_are_enabled() {
-        let mut input = Vec::new();
-        input.push(0x02);
+        let mut input = vec![0x01, 0x02];
         let payload_7a: Vec<_> = (80u8..=99).collect();
         input.push(0x7a);
         input.extend_from_slice(&payload_7a);
 
         let actions = ActionParser::new().parse(&input, false).unwrap();
 
-        assert_eq!(actions.len(), 2);
-        assert_opaque_action(&actions[0], 0x02, 0x02, &[]);
-        assert_opaque_action(&actions[1], 0x7a, 0x7a, &payload_7a);
+        assert_eq!(actions.len(), 3);
+        assert_opaque_action(&actions[0], 0x01, 0x01, &[]);
+        assert_opaque_action(&actions[1], 0x02, 0x02, &[]);
+        assert_opaque_action(&actions[2], 0x7a, 0x7a, &payload_7a);
 
-        let json = serde_json::to_value(&actions[1]).unwrap();
+        let json = serde_json::to_value(&actions[2]).unwrap();
         assert_eq!(json["id"], 0x7a);
         assert_eq!(json["rawOpcode"], 0x7a);
         assert_eq!(json["normalizedOpcode"], 0x7a);
